@@ -35,10 +35,23 @@ export default function VoiceInput({ onText }) {
   };
 
   return (
-    <div className="row">
-      <button className="btn" onClick={listening ? stop : start}>
-        {listening ? '停止录音' : '开始语音输入'}
+    <div className="row" style={{ alignItems: 'center', gap: 8 }}>
+      <button 
+        className="btn" 
+        onClick={listening ? stop : start}
+        style={{ 
+          background: listening ? 'rgba(239, 68, 68, 0.2)' : undefined,
+          borderColor: listening ? 'rgba(239, 68, 68, 0.5)' : undefined,
+          animation: listening ? 'pulse 1.5s ease-in-out infinite' : undefined
+        }}
+      >
+        {listening ? '🛑 停止录音' : '🎤 开始语音输入'}
       </button>
+      {listening && (
+        <span className="muted" style={{ fontSize: '12px' }}>
+          正在录音...
+        </span>
+      )}
     </div>
   );
 }

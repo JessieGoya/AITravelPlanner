@@ -3,8 +3,12 @@ import VoiceInput from '../shared/VoiceInput';
 import MapView from '../shared/MapView';
 import { generatePlan } from '../services/llm';
 import { getRuntimeConfig } from '../services/config';
+import { parseTravelInput } from '../services/inputParser';
+import { savePlan, getUserPlans, getPlan, deletePlan } from '../services/plans';
+import { getSupabase } from '../services/supabase';
 
 const PREFERENCES = ['美食', '自然', '历史', '艺术', '亲子', '动漫', '购物'];
+const USER_KEY = 'demo_user_v1';
 
 export default function Planner() {
   const [destination, setDestination] = useState('');
@@ -12,22 +16,87 @@ export default function Planner() {
   const [budget, setBudget] = useState(10000);
   const [people, setPeople] = useState(2);
   const [prefs, setPrefs] = useState(['美食']);
+  const [startDate, setStartDate] = useState('');
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [parsing, setParsing] = useState(false);
   const [planOutput, setPlanOutput] = useState('');
+  const [currentPlanId, setCurrentPlanId] = useState(null);
+  const [savedPlans, setSavedPlans] = useState([]);
+  const [showPlansList, setShowPlansList] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [user, setUser] = useState(null);
 
   const cfg = useMemo(getRuntimeConfig, []);
 
-  useEffect(() => {
-    if (inputText) {
-      const m = inputText.match(/(去|到)([^，。\s]+).*?(\d+)\s*[天日].*?预算\s*(\d+)/);
-      if (m) {
-        setDestination(m[2]);
-        setDays(Number(m[3]));
-        setBudget(Number(m[4]));
+  // 加载已保存的行程
+  const loadPlans = async () => {
+    try {
+      const plans = await getUserPlans();
+      setSavedPlans(plans);
+    } catch (error) {
+      console.error('加载行程失败:', error);
+      if (error.message !== '请先登录') {
+        setSavedPlans([]);
       }
     }
-  }, [inputText]);
+  };
+
+  // 检查用户登录状态
+  useEffect(() => {
+    const checkUser = async () => {
+      const supabase = getSupabase();
+      const session = supabase.auth.getSession();
+      if (session) {
+        setUser(session.user);
+        await loadPlans();
+      } else {
+        // 回退到本地存储
+        const raw = localStorage.getItem(USER_KEY);
+        if (raw) {
+          try {
+            setUser(JSON.parse(raw));
+          } catch (e) {
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+        }
+      }
+    };
+    checkUser();
+  }, []);
+
+  // 智能解析输入文本
+  useEffect(() => {
+    if (!inputText || !inputText.trim() || !cfg.llm.apiKey) {
+      return;
+    }
+
+    // 延迟执行，避免用户输入时频繁调用
+    const timer = setTimeout(async () => {
+      setParsing(true);
+      try {
+        const parsed = await parseTravelInput(inputText);
+        if (parsed) {
+          if (parsed.destination) setDestination(parsed.destination);
+          if (parsed.days > 0) setDays(parsed.days);
+          if (parsed.budget > 0) setBudget(parsed.budget);
+          if (parsed.people > 0) setPeople(parsed.people);
+          if (parsed.preferences && parsed.preferences.length > 0) {
+            setPrefs(parsed.preferences);
+          }
+          if (parsed.startDate) setStartDate(parsed.startDate);
+        }
+      } catch (error) {
+        console.error('解析输入失败:', error);
+      } finally {
+        setParsing(false);
+      }
+    }, 1500); // 用户停止输入 1.5 秒后解析
+
+    return () => clearTimeout(timer);
+  }, [inputText, cfg.llm.apiKey]);
 
   const togglePref = (p) => {
     setPrefs((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
@@ -36,13 +105,96 @@ export default function Planner() {
   const handlePlan = async () => {
     setLoading(true);
     try {
-      const userPrompt = `目的地:${destination}\n天数:${days}\n预算:${budget}\n人数:${people}\n偏好:${prefs.join(',')}\n请输出详细的逐日行程、交通、住宿、景点、餐饮和门票费用估算（人民币），并给出现实可查的地标名称。`;
+      const userPrompt = `目的地:${destination}\n天数:${days}\n预算:${budget}\n人数:${people}\n偏好:${prefs.join(',')}\n${startDate ? `出发日期:${startDate}\n` : ''}请输出详细的逐日行程、交通、住宿、景点、餐饮和门票费用估算（人民币），并给出现实可查的地标名称。`;
       const res = await generatePlan(userPrompt);
       setPlanOutput(res);
     } catch (e) {
       setPlanOutput(`生成失败：${e?.message || e}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 保存行程
+  const handleSavePlan = async () => {
+    if (!user) {
+      alert('请先登录以保存行程');
+      return;
+    }
+
+    if (!destination || !planOutput) {
+      alert('请先生成行程后再保存');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await savePlan({
+        id: currentPlanId,
+        destination,
+        days,
+        budget,
+        people,
+        preferences: prefs,
+        startDate,
+        planContent: planOutput,
+        inputText,
+        notes: ''
+      });
+      alert('保存成功！');
+      setCurrentPlanId(null); // 保存后重置，下次会创建新计划
+      await loadPlans();
+    } catch (error) {
+      alert('保存失败：' + error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // 加载已保存的行程
+  const handleLoadPlan = async (planId) => {
+    try {
+      const plan = await getPlan(planId);
+      setDestination(plan.destination || '');
+      setDays(plan.days || 5);
+      setBudget(plan.budget || 10000);
+      setPeople(plan.people || 2);
+      setPrefs(plan.preferences || ['美食']);
+      setStartDate(plan.start_date || '');
+      setInputText(plan.input_text || '');
+      setPlanOutput(plan.plan_content || '');
+      setCurrentPlanId(plan.id);
+      setShowPlansList(false);
+      alert('已加载行程');
+    } catch (error) {
+      alert('加载失败：' + error.message);
+    }
+  };
+
+  // 删除行程
+  const handleDeletePlan = async (planId) => {
+    if (!confirm('确定要删除这个行程吗？')) {
+      return;
+    }
+
+    try {
+      await deletePlan(planId);
+      await loadPlans();
+      if (currentPlanId === planId) {
+        // 如果删除的是当前正在编辑的行程，清空表单
+        setCurrentPlanId(null);
+        setDestination('');
+        setDays(5);
+        setBudget(10000);
+        setPeople(2);
+        setPrefs(['美食']);
+        setStartDate('');
+        setInputText('');
+        setPlanOutput('');
+      }
+      alert('删除成功');
+    } catch (error) {
+      alert('删除失败：' + error.message);
     }
   };
 
@@ -85,8 +237,11 @@ export default function Planner() {
         </div>
 
         <div className="col" style={{ marginTop: 12 }}>
-          <label>语音/文字输入</label>
-          <VoiceInput onText={(t) => setInputText(t)} />
+          <label>语音/文字输入 {parsing && <span className="muted" style={{ fontSize: '12px' }}>（正在解析...）</span>}</label>
+          <VoiceInput onText={(t) => {
+            // 如果已有文本，追加新文本；否则直接设置
+            setInputText(prev => prev ? `${prev}，${t}` : t);
+          }} />
           <textarea
             className="input"
             placeholder="例如：我想去日本，5 天，预算 1 万元，喜欢美食和动漫，带孩子"
@@ -94,13 +249,111 @@ export default function Planner() {
             onChange={(e) => setInputText(e.target.value)}
             rows={3}
           />
+          {inputText && (
+            <div className="muted" style={{ fontSize: '12px', marginTop: 4 }}>
+              提示：系统会自动从您的输入中提取目的地、天数、预算等信息。可以多次使用语音输入来完善信息。
+            </div>
+          )}
         </div>
+        
+        {startDate && (
+          <div className="col" style={{ marginTop: 12 }}>
+            <label>出发日期</label>
+            <input 
+              className="input" 
+              type="date" 
+              value={startDate} 
+              onChange={(e) => setStartDate(e.target.value)} 
+            />
+          </div>
+        )}
 
-        <div className="row" style={{ marginTop: 12 }}>
+        <div className="row" style={{ marginTop: 12, gap: 8 }}>
           <button className="btn" onClick={handlePlan} disabled={loading || !cfg.llm.apiKey}>
             {loading ? '生成中…' : cfg.llm.apiKey ? '生成行程' : '请先到设置页配置 LLM Key'}
           </button>
+          {user && (
+            <>
+              <button 
+                className="btn secondary" 
+                onClick={handleSavePlan} 
+                disabled={saving || !planOutput}
+              >
+                {saving ? '保存中…' : '保存行程'}
+              </button>
+              <button 
+                className="btn secondary" 
+                onClick={() => {
+                  setShowPlansList(!showPlansList);
+                  if (!showPlansList) {
+                    loadPlans();
+                  }
+                }}
+              >
+                {showPlansList ? '隐藏' : '我的行程'}
+              </button>
+            </>
+          )}
         </div>
+
+        {showPlansList && user && (
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="section-title">我的行程列表</div>
+            {savedPlans.length === 0 ? (
+              <div className="muted" style={{ padding: '20px', textAlign: 'center' }}>
+                暂无已保存的行程
+              </div>
+            ) : (
+              <div className="col" style={{ gap: 8 }}>
+                {savedPlans.map((plan) => (
+                  <div 
+                    key={plan.id} 
+                    className="row" 
+                    style={{ 
+                      justifyContent: 'space-between', 
+                      alignItems: 'center',
+                      padding: '12px',
+                      background: 'var(--bg-secondary)',
+                      borderRadius: '8px',
+                      border: currentPlanId === plan.id ? '2px solid var(--primary)' : '1px solid var(--border)'
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                        {plan.destination || '未命名行程'}
+                      </div>
+                      <div className="muted" style={{ fontSize: '12px' }}>
+                        {plan.days}天 · {plan.people}人 · ¥{plan.budget.toLocaleString()}
+                        {plan.start_date && ` · ${plan.start_date}`}
+                      </div>
+                      {plan.created_at && (
+                        <div className="muted" style={{ fontSize: '11px', marginTop: 4 }}>
+                          {new Date(plan.created_at).toLocaleString('zh-CN')}
+                        </div>
+                      )}
+                    </div>
+                    <div className="row" style={{ gap: 8 }}>
+                      <button 
+                        className="btn secondary" 
+                        style={{ fontSize: '12px', padding: '6px 12px' }}
+                        onClick={() => handleLoadPlan(plan.id)}
+                      >
+                        加载
+                      </button>
+                      <button 
+                        className="btn secondary" 
+                        style={{ fontSize: '12px', padding: '6px 12px' }}
+                        onClick={() => handleDeletePlan(plan.id)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="col" style={{ gap: 16 }}>

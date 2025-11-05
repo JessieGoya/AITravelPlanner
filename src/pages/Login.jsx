@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { getSupabase } from '../services/supabase';
 
 const USER_KEY = 'demo_user_v1';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isRegister, setIsRegister] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [user, setUser] = useState(null);
   const [error, setError] = useState('');
@@ -13,15 +16,28 @@ export default function Login() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const raw = localStorage.getItem(USER_KEY);
-    if (raw) {
-      try {
-        const u = JSON.parse(raw);
-        setUser(u);
-      } catch (e) {
-        console.error('Failed to parse user data', e);
+    const checkUser = () => {
+      const supabase = getSupabase();
+      const session = supabase.auth.getSession();
+      if (session) {
+        setUser(session.user);
+      } else {
+        // 回退到本地存储
+        const raw = localStorage.getItem(USER_KEY);
+        if (raw) {
+          try {
+            const u = JSON.parse(raw);
+            setUser(u);
+          } catch (e) {
+            console.error('Failed to parse user data', e);
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+        }
       }
-    }
+    };
+    checkUser();
   }, []);
 
   const validateEmail = (email) => {
@@ -51,23 +67,45 @@ export default function Login() {
       return;
     }
 
+    if (isRegister) {
+      if (password !== confirmPassword) {
+        setError('两次输入的密码不一致');
+        return;
+      }
+    }
+
     setIsLoading(true);
     
-    // 模拟登录延迟
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
     try {
-      const u = {
-        id: crypto.randomUUID(),
+      const supabase = getSupabase();
+      let result;
+
+      if (isRegister) {
+        // 注册
+        result = await supabase.auth.signUp(email.trim(), password);
+      } else {
+        // 登录
+        result = await supabase.auth.signInWithPassword(email.trim(), password);
+      }
+
+      if (result.error) {
+        throw new Error(result.error.message || '操作失败');
+      }
+
+      const u = result.user || {
+        id: result.session?.user?.id || crypto.randomUUID(),
         email: email.trim(),
         name: email.split('@')[0],
         loginTime: new Date().toISOString()
       };
-      
+
+      // 同时保存到本地存储（兼容性）
       localStorage.setItem(USER_KEY, JSON.stringify(u));
       setUser(u);
       setEmail('');
       setPassword('');
+      setConfirmPassword('');
+      setIsRegister(false);
       
       // 如果勾选了记住我，保存到 sessionStorage
       if (rememberMe) {
@@ -77,13 +115,19 @@ export default function Login() {
       // 登录成功后跳转到首页
       navigate('/');
     } catch (e) {
-      setError('登录失败，请重试');
+      setError(e.message || '操作失败，请重试');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      const supabase = getSupabase();
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.error('退出登录失败:', e);
+    }
     localStorage.removeItem(USER_KEY);
     sessionStorage.removeItem(USER_KEY);
     setUser(null);
@@ -125,7 +169,9 @@ export default function Login() {
 
   return (
     <div className="card" style={{ maxWidth: '500px', margin: '0 auto' }}>
-      <div className="section-title">用户登录</div>
+      <div className="section-title">
+        {isRegister ? '用户注册' : '用户登录'}
+      </div>
       <div className="col" style={{ gap: 16 }}>
         {error && (
           <div style={{
@@ -172,6 +218,24 @@ export default function Login() {
             disabled={isLoading}
           />
         </div>
+
+        {isRegister && (
+          <div className="col">
+            <label style={{ fontSize: '14px', fontWeight: 500, marginBottom: 6 }}>确认密码</label>
+            <input
+              className="input"
+              type="password"
+              placeholder="请再次输入密码"
+              value={confirmPassword}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value);
+                setError('');
+              }}
+              onKeyPress={handleKeyPress}
+              disabled={isLoading}
+            />
+          </div>
+        )}
         
         <div className="row" style={{ alignItems: 'center', gap: 8 }}>
           <input
@@ -190,14 +254,30 @@ export default function Login() {
         <button
           className="btn"
           onClick={login}
-          disabled={isLoading || !email.trim() || !password.trim()}
+          disabled={isLoading || !email.trim() || !password.trim() || (isRegister && !confirmPassword.trim())}
           style={{ width: '100%', marginTop: 8 }}
         >
-          {isLoading ? '登录中...' : '登录'}
+          {isLoading ? (isRegister ? '注册中...' : '登录中...') : (isRegister ? '注册' : '登录')}
         </button>
+
+        <div className="row" style={{ justifyContent: 'center', gap: 8, marginTop: 8 }}>
+          <button
+            className="btn secondary"
+            onClick={() => {
+              setIsRegister(!isRegister);
+              setError('');
+              setPassword('');
+              setConfirmPassword('');
+            }}
+            disabled={isLoading}
+            style={{ fontSize: '13px', padding: '6px 12px' }}
+          >
+            {isRegister ? '已有账号？去登录' : '没有账号？去注册'}
+          </button>
+        </div>
         
         <div className="muted" style={{ fontSize: '13px', marginTop: 8, textAlign: 'center' }}>
-          演示模式：任意有效的邮箱和6位以上密码即可登录
+          当前使用本地存储模式。可在设置页配置 Supabase 以启用云端同步。
         </div>
       </div>
     </div>
