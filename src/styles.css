@@ -1,0 +1,51 @@
+:root {
+  --bg: #0b1020;
+  --card: #11172a;
+  --text: #e5eef7;
+  --muted: #a5b4c8;
+  --primary: #0ea5e9;
+  --primary-2: #38bdf8;
+  --border: #1f2a44;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  background: radial-gradient(1200px 800px at 20% -20%, #182142 0%, transparent 60%), var(--bg);
+  color: var(--text);
+}
+
+.app-root { min-height: 100%; display: grid; grid-template-rows: auto 1fr auto; }
+.app-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--border); background: rgba(11,16,32,0.6); backdrop-filter: blur(6px); position: sticky; top: 0; z-index: 10; }
+.brand { font-weight: 700; letter-spacing: 0.2px; }
+.nav { display: flex; gap: 14px; }
+.nav a { color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 8px; }
+.nav a:hover { color: var(--text); background: #0d1326; }
+
+.app-main { padding: 20px; }
+.app-footer { padding: 14px 20px; color: var(--muted); border-top: 1px solid var(--border); }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+.row { display: flex; gap: 12px; align-items: center; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+
+.input, textarea, select { background: #0e1428; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.btn { background: linear-gradient(180deg, var(--primary-2), var(--primary)); color: #08101f; font-weight: 700; border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+.btn.secondary { background: #0f172a; color: var(--text); border: 1px solid var(--border); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.section-title { font-size: 18px; font-weight: 700; margin: 0 0 10px 0; }
+.grid { display: grid; gap: 16px; }
+.grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 900px) { .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; } }
+
+.map { width: 100%; height: 420px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+.muted { color: var(--muted); }
+
+.plan-output { white-space: pre-wrap; background: #0b1224; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+
+
+
