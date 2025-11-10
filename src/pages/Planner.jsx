@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import VoiceInput from '../shared/VoiceInput';
 import MapView from '../shared/MapView';
+import MarkdownPreview from '../shared/MarkdownPreview';
 import { generatePlan } from '../services/llm';
 import { getRuntimeConfig } from '../services/config';
 import { parseTravelInput } from '../services/inputParser';
 import { savePlan, getUserPlans, getPlan, deletePlan } from '../services/plans';
 import { getSupabase } from '../services/supabase';
+import { parsePlacesFromPlan, parseRouteSequence } from '../services/routeParser';
 
 const PREFERENCES = ['美食', '自然', '历史', '艺术', '亲子', '动漫', '购物'];
 const USER_KEY = 'demo_user_v1';
@@ -26,6 +28,10 @@ export default function Planner() {
   const [showPlansList, setShowPlansList] = useState(false);
   const [saving, setSaving] = useState(false);
   const [user, setUser] = useState(null);
+  const [places, setPlaces] = useState([]);
+  const [routeSequence, setRouteSequence] = useState([]);
+  const [routeStrategy, setRouteStrategy] = useState('driving');
+  const [parsingPlaces, setParsingPlaces] = useState(false);
 
   const cfg = useMemo(getRuntimeConfig, []);
 
@@ -93,7 +99,7 @@ export default function Planner() {
       } finally {
         setParsing(false);
       }
-    }, 1500); // 用户停止输入 1.5 秒后解析
+    }, 5000); // 用户停止输入 5.0 秒后解析
 
     return () => clearTimeout(timer);
   }, [inputText, cfg.llm.apiKey]);
@@ -104,10 +110,27 @@ export default function Planner() {
 
   const handlePlan = async () => {
     setLoading(true);
+    setPlaces([]);
+    setRouteSequence([]);
     try {
       const userPrompt = `目的地:${destination}\n天数:${days}\n预算:${budget}\n人数:${people}\n偏好:${prefs.join(',')}\n${startDate ? `出发日期:${startDate}\n` : ''}请输出详细的逐日行程、交通、住宿、景点、餐饮和门票费用估算（人民币），并给出现实可查的地标名称。`;
       const res = await generatePlan(userPrompt);
       setPlanOutput(res);
+      
+      // 解析地点和路线
+      if (res) {
+        setParsingPlaces(true);
+        try {
+          const parsedPlaces = await parsePlacesFromPlan(res, destination);
+          const parsedRoutes = parseRouteSequence(res);
+          setPlaces(parsedPlaces);
+          setRouteSequence(parsedRoutes);
+        } catch (error) {
+          console.error('解析地点和路线失败:', error);
+        } finally {
+          setParsingPlaces(false);
+        }
+      }
     } catch (e) {
       setPlanOutput(`生成失败：${e?.message || e}`);
     } finally {
@@ -162,9 +185,26 @@ export default function Planner() {
       setPrefs(plan.preferences || ['美食']);
       setStartDate(plan.start_date || '');
       setInputText(plan.input_text || '');
-      setPlanOutput(plan.plan_content || '');
+      const planContent = plan.plan_content || '';
+      setPlanOutput(planContent);
       setCurrentPlanId(plan.id);
       setShowPlansList(false);
+      
+      // 解析地点和路线
+      if (planContent) {
+        setParsingPlaces(true);
+        try {
+          const parsedPlaces = await parsePlacesFromPlan(planContent, plan.destination || '');
+          const parsedRoutes = parseRouteSequence(planContent);
+          setPlaces(parsedPlaces);
+          setRouteSequence(parsedRoutes);
+        } catch (error) {
+          console.error('解析地点和路线失败:', error);
+        } finally {
+          setParsingPlaces(false);
+        }
+      }
+      
       alert('已加载行程');
     } catch (error) {
       alert('加载失败：' + error.message);
@@ -244,7 +284,7 @@ export default function Planner() {
           }} />
           <textarea
             className="input"
-            placeholder="例如：我想去日本，5 天，预算 1 万元，喜欢美食和动漫，带孩子"
+            placeholder="请输入语音或文字，例如：我想去日本，5 天，预算 1 万元，喜欢美食和动漫，带孩子"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             rows={3}
@@ -358,13 +398,48 @@ export default function Planner() {
 
       <div className="col" style={{ gap: 16 }}>
         <div className="card">
-          <div className="section-title">地图</div>
-          <MapView />
-          {!cfg.map.key && <div className="muted" style={{ marginTop: 8 }}>未配置地图 Key，前往设置页填入高德/百度 Key</div>}
+          <div className="section-title">
+            地图
+            {parsingPlaces && <span className="muted" style={{ fontSize: '12px', marginLeft: 8 }}>（正在解析地点...）</span>}
+          </div>
+          <div className="row" style={{ marginBottom: 8, gap: 8, alignItems: 'center' }}>
+            <label style={{ fontSize: '12px' }}>路线类型：</label>
+            <select 
+              className="input" 
+              value={routeStrategy} 
+              onChange={(e) => setRouteStrategy(e.target.value)}
+              style={{ fontSize: '12px', padding: '4px 8px', width: 'auto' }}
+            >
+              <option value="driving">驾车</option>
+              <option value="walking">步行</option>
+              <option value="transit">公交</option>
+            </select>
+            {places.length > 0 && (
+              <span className="muted" style={{ fontSize: '12px', marginLeft: 8 }}>
+                已解析 {places.length} 个地点
+              </span>
+            )}
+          </div>
+          <MapView 
+            destination={destination}
+            places={places}
+            routeSequence={routeSequence}
+            routeStrategy={routeStrategy}
+          />
+          {!cfg.map.key && (
+            <div className="muted" style={{ marginTop: 8, fontSize: '12px' }}>
+              未配置地图 Key，前往设置页填入高德/百度 Key
+            </div>
+          )}
+          {cfg.map.key && places.length === 0 && planOutput && (
+            <div className="muted" style={{ marginTop: 8, fontSize: '12px' }}>
+              提示：地图将在地点解析完成后自动显示
+            </div>
+          )}
         </div>
         <div className="card">
           <div className="section-title">AI 规划结果</div>
-          <div className="plan-output">{planOutput || '生成结果将显示在此'}</div>
+          <MarkdownPreview content={planOutput} />
         </div>
       </div>
     </div>

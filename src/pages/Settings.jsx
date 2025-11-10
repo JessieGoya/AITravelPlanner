@@ -3,9 +3,11 @@ import { getRuntimeConfig, saveRuntimeConfig } from '../services/config';
 import { saveSupabaseConfig } from '../services/supabase';
 
 export default function Settings() {
-  const [llmBaseUrl, setLlmBaseUrl] = useState('');
+  // const [llmBaseUrl, setLlmBaseUrl] = useState('');
+  const [llmBaseUrl, setLlmBaseUrl] = useState('https://dashscope.aliyuncs.com/compatible-mode/v1');
   const [llmKey, setLlmKey] = useState('');
-  const [llmModel, setLlmModel] = useState('gpt-4o-mini');
+  // const [llmModel, setLlmModel] = useState('gpt-4o-mini');
+  const [llmModel, setLlmModel] = useState('qwen-plus');
   const [mapKey, setMapKey] = useState('');
   const [mapProvider, setMapProvider] = useState('amap');
   const [currency, setCurrency] = useState('CNY');
@@ -16,15 +18,17 @@ export default function Settings() {
 
   useEffect(() => {
     const cfg = getRuntimeConfig();
-    setLlmBaseUrl(cfg.llm.baseUrl || '');
+    // setLlmBaseUrl(cfg.llm.baseUrl || '');
+    setLlmBaseUrl(cfg.llm.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1');
     setLlmKey(cfg.llm.apiKey || '');
-    setLlmModel(cfg.llm.model || 'gpt-4o-mini');
+    // setLlmModel(cfg.llm.model || 'gpt-4o-mini');
+    setLlmModel(cfg.llm.model || 'qwen-plus');
     setMapKey(cfg.map.key || '');
     setMapProvider(cfg.map.provider || 'amap');
     setCurrency(cfg.budget.currency || 'CNY');
     setTheme(cfg.theme || 'dark');
     
-    // 加载 Supabase 配置
+    // 加载 Supabase 配置 ?
     const supabaseConfigStr = localStorage.getItem('supabase_config');
     if (supabaseConfigStr) {
       try {
@@ -78,9 +82,11 @@ export default function Settings() {
         try {
           const config = JSON.parse(event.target.result);
           if (config.llm) {
-            setLlmBaseUrl(config.llm.baseUrl || '');
+            // setLlmBaseUrl(config.llm.baseUrl || '');
+            setLlmBaseUrl(config.llm.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1');
             setLlmKey(config.llm.apiKey || '');
-            setLlmModel(config.llm.model || 'gpt-4o-mini');
+            // setLlmModel(config.llm.model || 'gpt-4o-mini');
+            setLlmModel(config.llm.model || 'qwen-plus');
           }
           if (config.map) {
             setMapProvider(config.map.provider || 'amap');
@@ -154,10 +160,13 @@ export default function Settings() {
             <div className="col">
               <label style={{ fontSize: '14px', fontWeight: 500 }}>地图服务商</label>
               <select className="input" value={mapProvider} onChange={(e) => setMapProvider(e.target.value)}>
-                <option value="amap">高德地图</option>
-                <option value="baidu">百度地图</option>
-                <option value="google">Google Maps</option>
+                <option value="amap">高德地图（中国境内推荐）</option>
+                <option value="baidu">百度地图（中国境内推荐）</option>
+                <option value="osm">OpenStreetMap（全球覆盖，海外推荐）</option>
               </select>
+              <div className="muted" style={{ fontSize: '12px', marginTop: 4 }}>
+                {mapProvider === 'osm' ? 'OpenStreetMap 无需 API Key，全球覆盖清晰' : '中国地图服务在海外地区可能显示模糊'}
+              </div>
             </div>
             <div className="col">
               <label style={{ fontSize: '14px', fontWeight: 500 }}>地图 API Key</label>
@@ -166,8 +175,14 @@ export default function Settings() {
                 type="password"
                 value={mapKey}
                 onChange={(e) => setMapKey(e.target.value)}
-                placeholder="浏览器本地保存"
+                placeholder={mapProvider === 'osm' ? 'OpenStreetMap 无需 API Key' : '浏览器本地保存'}
+                disabled={mapProvider === 'osm'}
               />
+              {mapProvider === 'osm' && (
+                <div className="muted" style={{ fontSize: '12px', marginTop: 4 }}>
+                  OpenStreetMap 是免费开源地图服务，无需 API Key
+                </div>
+              )}
             </div>
             <div className="col">
               <label style={{ fontSize: '14px', fontWeight: 500 }}>预算货币</label>

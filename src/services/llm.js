@@ -34,7 +34,8 @@ export async function generatePlan(prompt) {
     body: JSON.stringify({
       baseUrl: cfg.llm.baseUrl,
       apiKey: cfg.llm.apiKey,
-      model: cfg.llm.model || 'gpt-4o-mini',
+      // model: cfg.llm.model || 'gpt-4o-mini',
+      model: cfg.llm.model || 'qwen-plus',
       prompt: prompt
     })
   });

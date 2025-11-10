@@ -86,7 +86,9 @@ PS. 可以通过 Github Actions 将项目打包成 Docker 镜像并推送到阿�
 
 ```bash
 docker build -t ai-travel-planner-web:latest .
-docker run --rm -p 8081:80 ai-travel-planner-web:latest
+docker stop ai-travel-planner-web
+docker rm ai-travel-planner-web
+docker run -d -p 8081:80 --name ai-travel-planner-web ai-travel-planner-web:latest
 # 访问 http://localhost:8081
 ```
 
@@ -121,6 +123,9 @@ base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 model="qwen-plus"
 ```
+
+superabase:
+密码：123456Aa_
 
 
 测试结果：
