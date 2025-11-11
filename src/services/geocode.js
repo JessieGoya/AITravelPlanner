@@ -3,9 +3,10 @@ import { getRuntimeConfig } from './config';
 /**
  * 地理编码：将地址转换为坐标
  * @param {string} address - 地址字符串
+ * @param {AbortSignal} signal - 可选的取消信号
  * @returns {Promise<{lng: number, lat: number, address: string}>} 坐标和地址信息
  */
-export async function geocode(address) {
+export async function geocode(address, signal = null) {
   if (!address || !address.trim()) {
     throw new Error('地址不能为空');
   }
@@ -18,13 +19,17 @@ export async function geocode(address) {
 
   try {
     if (cfg.map.provider === 'osm') {
-      return await geocodeOsm(address);
+      return await geocodeOsm(address, signal);
     } else if (cfg.map.provider === 'baidu') {
-      return await geocodeBaidu(address, cfg.map.key);
+      return await geocodeBaidu(address, cfg.map.key, signal);
     } else {
-      return await geocodeAmap(address, cfg.map.key);
+      return await geocodeAmap(address, cfg.map.key, signal);
     }
   } catch (error) {
+    // 如果是取消错误，直接抛出
+    if (error.name === 'AbortError' || (signal && signal.aborted)) {
+      throw error;
+    }
     console.error('地理编码失败:', error);
     throw error;
   }
@@ -34,34 +39,96 @@ export async function geocode(address) {
  * OpenStreetMap Nominatim 地理编码
  * 无需 Key，注意频率限制（前端使用请控制请求并添加合适的 UA）
  */
-async function geocodeOsm(address) {
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(address)}`;
-  const response = await fetch(url, {
+async function geocodeOsm(address, signal = null) {
+  // 改进查询参数，提高准确性
+  // 1. 增加结果数量限制为3，然后选择最相关的结果
+  // 2. 添加语言参数（中文）
+  // 3. 添加地址详情参数
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=3&q=${encodeURIComponent(address)}&accept-language=zh-CN,zh,en&addressdetails=1`;
+  const fetchOptions = {
     headers: {
       // 一些 Nominatim 实例要求设置 UA；浏览器 UA 已有，这里补一个名称
-      'Accept': 'application/json'
+      'Accept': 'application/json',
+      'User-Agent': 'AITravelPlanner/1.0'
     }
-  });
+  };
+  
+  // 如果提供了取消信号，添加到fetch选项
+  if (signal) {
+    fetchOptions.signal = signal;
+  }
+  
+  const response = await fetch(url, fetchOptions);
   const data = await response.json();
 
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error('未找到地址');
   }
 
-  const item = data[0];
+  // 选择最相关的结果
+  // 优先选择重要性（importance）最高的结果，或者匹配度最好的结果
+  let bestResult = data[0];
+  
+  // 如果地址中包含国家名称（如"日本"、"中国"等），优先选择匹配的结果
+  const addressLower = address.toLowerCase();
+  const countryKeywords = {
+    '日本': ['japan', '日本', 'tokyo', '东京'],
+    '中国': ['china', '中国', 'beijing', '北京', 'shanghai', '上海'],
+    '美国': ['usa', 'united states', '美国', 'new york', '纽约'],
+    '韩国': ['korea', '韩国', 'seoul', '首尔'],
+    '泰国': ['thailand', '泰国', 'bangkok', '曼谷']
+  };
+  
+  // 尝试找到匹配国家的结果
+  for (const [country, keywords] of Object.entries(countryKeywords)) {
+    if (keywords.some(kw => addressLower.includes(kw.toLowerCase()))) {
+      const matchingResult = data.find(item => {
+        const displayName = (item.display_name || '').toLowerCase();
+        const addressDetails = item.address || {};
+        const countryName = (addressDetails.country || '').toLowerCase();
+        return keywords.some(kw => 
+          displayName.includes(kw.toLowerCase()) || 
+          countryName.includes(kw.toLowerCase())
+        );
+      });
+      if (matchingResult) {
+        bestResult = matchingResult;
+        break;
+      }
+    }
+  }
+  
+  // 如果所有结果都不匹配，选择重要性最高的
+  if (data.length > 1 && bestResult === data[0]) {
+    const sortedByImportance = [...data].sort((a, b) => 
+      (b.importance || 0) - (a.importance || 0)
+    );
+    bestResult = sortedByImportance[0];
+  }
+
   return {
-    lng: parseFloat(item.lon),
-    lat: parseFloat(item.lat),
-    address: item.display_name || address
+    lng: parseFloat(bestResult.lon),
+    lat: parseFloat(bestResult.lat),
+    address: bestResult.display_name || address
   };
 }
 
 /**
  * 高德地图地理编码 - 使用 JS API（避免 USERKEY_PLAT_NOMATCH 错误）
  */
-async function geocodeAmap(address, key) {
+async function geocodeAmap(address, key, signal = null) {
+  // 检查是否已取消
+  if (signal && signal.aborted) {
+    throw new DOMException('请求已取消', 'AbortError');
+  }
+  
   // 等待高德地图 JS API 加载完成
   await waitForAmap(key);
+  
+  // 再次检查是否已取消
+  if (signal && signal.aborted) {
+    throw new DOMException('请求已取消', 'AbortError');
+  }
   
   return new Promise((resolve, reject) => {
     if (!window.AMap || !window.AMap.Geocoder) {
@@ -73,7 +140,27 @@ async function geocodeAmap(address, key) {
       city: '全国' // 全国范围搜索
     });
 
+    // 监听取消信号
+    const abortHandler = () => {
+      reject(new DOMException('请求已取消', 'AbortError'));
+    };
+    
+    if (signal) {
+      signal.addEventListener('abort', abortHandler);
+    }
+
     geocoder.getLocation(address, (status, result) => {
+      // 移除取消监听器
+      if (signal) {
+        signal.removeEventListener('abort', abortHandler);
+      }
+      
+      // 检查是否已取消
+      if (signal && signal.aborted) {
+        reject(new DOMException('请求已取消', 'AbortError'));
+        return;
+      }
+      
       if (status === 'complete' && result.geocodes && result.geocodes.length > 0) {
         const geocode = result.geocodes[0];
         resolve({
@@ -343,9 +430,13 @@ function waitForAmap(key) {
 /**
  * 百度地图地理编码
  */
-async function geocodeBaidu(address, key) {
+async function geocodeBaidu(address, key, signal = null) {
   const url = `https://api.map.baidu.com/geocoding/v3/?address=${encodeURIComponent(address)}&output=json&ak=${encodeURIComponent(key)}`;
-  const response = await fetch(url);
+  const fetchOptions = {};
+  if (signal) {
+    fetchOptions.signal = signal;
+  }
+  const response = await fetch(url, fetchOptions);
   const data = await response.json();
   
   if (data.status !== 0 || !data.result || !data.result.location) {

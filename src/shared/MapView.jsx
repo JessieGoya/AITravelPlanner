@@ -638,19 +638,36 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     // OSM 不需要 API Key
     if (cfg.map.provider !== 'osm' && !cfg.map.key) return;
 
+    // 使用 AbortController 来取消旧的请求
+    const abortController = new AbortController();
+    let isCancelled = false;
+
     const locateDestination = async () => {
       try {
         console.log('开始定位目的地:', destination);
-        const location = await geocode(destination);
+        const location = await geocode(destination, abortController.signal);
+        
+        // 检查请求是否已被取消
+        if (isCancelled || abortController.signal.aborted) {
+          console.log('定位请求已取消（新的请求已发起）');
+          return;
+        }
+        
         console.log('目的地坐标:', location);
         
-        if (location && mapRef.current) {
+        if (location && mapRef.current && !isCancelled) {
+          // 再次检查是否被取消（双重检查）
+          if (abortController.signal.aborted) return;
+          
           // 清理旧的标记（如果有）
           clearMarkers();
           
-          const effectiveProvider = getEffectiveProvider([location]);
+          // 使用实际的地图实例类型，而不是 getEffectiveProvider 的结果
+          // 因为地图实例已经根据 cfg.map.provider 初始化，坐标系统应该匹配
+          const actualProvider = cfg.map.provider;
           
-          if (effectiveProvider === 'baidu') {
+          if (actualProvider === 'baidu') {
+            // 百度地图使用 BD09 坐标系，geocode 返回的坐标应该已经是 BD09
             const pt = new window.BMapGL.Point(location.lng, location.lat);
             mapRef.current.centerAndZoom(pt, 12);
             const marker = new window.BMapGL.Marker(pt);
@@ -660,12 +677,15 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               mapRef.current.openInfoWindow(infoWindow, pt);
             });
             markersRef.current.push(marker);
-          } else if (effectiveProvider === 'osm') {
+          } else if (actualProvider === 'osm') {
+            // OSM 使用 WGS84 坐标系，geocode 返回的坐标应该已经是 WGS84
             mapRef.current.setView([location.lat, location.lng], 12);
             const marker = window.L.marker([location.lat, location.lng]).addTo(mapRef.current);
             marker.bindPopup(destination);
             markersRef.current.push(marker);
           } else {
+            // 高德地图使用 GCJ02 坐标系，geocode 返回的坐标应该已经是 GCJ02
+            // 高德地图的 setCenter 接受 [lng, lat] 数组或 AMap.LngLat 对象
             mapRef.current.setCenter([location.lng, location.lat]);
             mapRef.current.setZoom(12);
             const marker = new window.AMap.Marker({
@@ -675,14 +695,25 @@ export default function MapView({ destination, places = [], routeSequence = [], 
             mapRef.current.add(marker);
             markersRef.current.push(marker);
           }
-          console.log('目的地定位成功');
+          console.log('目的地定位成功，使用地图提供商:', actualProvider, '坐标:', location);
         }
       } catch (error) {
+        // 如果请求被取消，不显示错误
+        if (isCancelled || abortController.signal.aborted) {
+          console.log('定位请求已取消');
+          return;
+        }
         console.error('定位目的地失败:', error);
       }
     };
 
     locateDestination();
+
+    // 清理函数：取消请求
+    return () => {
+      isCancelled = true;
+      abortController.abort();
+    };
   }, [destination, places, mapReady, cfg.map.key, cfg.map.provider]);
 
   // 显示地点标记和路线

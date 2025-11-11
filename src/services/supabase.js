@@ -115,26 +115,37 @@ class LocalSupabaseClient {
 
   from(table) {
     return {
-      select: (columns = '*') => ({
-        eq: (column, value) => ({
-          data: this.plans.filter(p => p[column] === value),
-          error: null
-        }),
-        order: (column, options = { ascending: true }) => ({
-          data: this.plans.slice().sort((a, b) => {
-            const aVal = a[column];
-            const bVal = b[column];
+      select: (columns = '*') => {
+        const self = this;
+        const buildOrderResult = (rows, orderByColumn, options = { ascending: true }) => {
+          const sorted = rows.slice().sort((a, b) => {
+            const aVal = a[orderByColumn];
+            const bVal = b[orderByColumn];
             if (options.ascending) {
               return aVal > bVal ? 1 : -1;
             } else {
               return aVal < bVal ? 1 : -1;
             }
-          }),
-          error: null
-        }),
-        data: this.plans,
-        error: null
-      }),
+          });
+          return { data: sorted, error: null };
+        };
+
+        const eqImpl = (column, value) => {
+          const filtered = self.plans.filter(p => p[column] === value);
+          return {
+            order: (orderByColumn, options = { ascending: true }) => buildOrderResult(filtered, orderByColumn, options),
+            get data() { return filtered; },
+            get error() { return null; }
+          };
+        };
+
+        return {
+          eq: eqImpl,
+          order: (orderByColumn, options = { ascending: true }) => buildOrderResult(self.plans, orderByColumn, options),
+          get data() { return self.plans; },
+          get error() { return null; }
+        };
+      },
       insert: (data) => {
         const plan = {
           ...data,
@@ -252,35 +263,93 @@ class FirebaseSupabaseCompatClient {
     }
 
     const api = {
-      select: (columns = '*') => ({
-        eq: (column, value) => ({
-          // 返回一个可继续 .order 的对象
-          order: async (orderByColumn, options = { ascending: true }) => {
+      select: (columns = '*') => {
+        // 构建链式查询对象
+        const buildQueryChain = (filters = []) => {
+          const executeQuery = async () => {
             await this._initPromise;
-            const { collection, query, where, orderBy, getDocs } = window.firebaseFirestore;
+            const { collection, query, where, getDocs } = window.firebaseFirestore;
             const colRef = collection(this._db, 'travel_plans');
-            const q = query(
-              colRef,
-              where(column, '==', value),
-              orderBy(orderByColumn, options.ascending ? 'asc' : 'desc')
-            );
+            
+            // 只使用第一个过滤条件（避免需要复合索引），其他条件在客户端过滤
+            let q = colRef;
+            if (filters.length > 0) {
+              q = query(colRef, where(filters[0].column, '==', filters[0].value));
+            }
+            
             const snap = await getDocs(q);
-            const data = [];
+            let data = [];
             snap.forEach(doc => {
               data.push(doc.data());
             });
-            return { data, error: null };
-          },
-          // 兼容直接 .eq().select() 的用法（不排序）
-          get data() {
-            // not used in our code path; kept for compatibility
-            return [];
-          },
-          get error() {
-            return null;
-          }
-        })
-      }),
+            
+            // 客户端应用剩余的过滤条件
+            if (filters.length > 1) {
+              for (let i = 1; i < filters.length; i++) {
+                data = data.filter(row => row[filters[i].column] === filters[i].value);
+              }
+            }
+            
+            return data;
+          };
+
+          const addFilter = (column, value) => {
+            return buildQueryChain([...filters, { column, value }]);
+          };
+
+          return {
+            eq: addFilter,
+            order: async (orderByColumn, options = { ascending: true }) => {
+              const data = await executeQuery();
+              
+              // 客户端排序
+              data.sort((a, b) => {
+                const aVal = a[orderByColumn] || '';
+                const bVal = b[orderByColumn] || '';
+                if (options.ascending) {
+                  return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+                } else {
+                  return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+                }
+              });
+              return { data, error: null };
+            },
+            // 支持直接 await 或访问 data/error
+            then: async (resolve, reject) => {
+              try {
+                const data = await executeQuery();
+                const result = { data, error: null };
+                if (resolve) resolve(result);
+                return result;
+              } catch (error) {
+                const result = { data: null, error };
+                if (reject) reject(error);
+                return result;
+              }
+            },
+            catch: async (fn) => {
+              try {
+                const data = await executeQuery();
+                return { data, error: null };
+              } catch (error) {
+                return fn(error);
+              }
+            },
+            // 兼容直接访问 data/error（异步）
+            get data() {
+              // 返回一个 Promise，这样可以直接 await
+              return executeQuery().then(data => data);
+            },
+            get error() {
+              return null;
+            }
+          };
+        };
+        
+        return {
+          eq: (column, value) => buildQueryChain([{ column, value }])
+        };
+      },
       insert: async (data) => {
         await this._initPromise;
         const { collection, addDoc, doc, setDoc, serverTimestamp } = window.firebaseFirestore;
@@ -293,39 +362,133 @@ class FirebaseSupabaseCompatClient {
         await setDoc(doc(this._db, 'travel_plans', id), row);
         return { data: [row], error: null };
       },
-      update: (data) => ({
-        eq: async (column, value) => {
-          await this._initPromise;
-          const { collection, query, where, getDocs, doc, updateDoc } = window.firebaseFirestore;
-          const colRef = collection(this._db, 'travel_plans');
-          // 我们的 id 存在字段里，查找到文档 id
-          const q = query(colRef, where(column, '==', value));
-          const snap = await getDocs(q);
-          if (snap.empty) {
-            return { data: null, error: { message: 'Not found' } };
+      update: (data) => {
+        const buildUpdateChain = (filters = []) => {
+          const addFilter = (column, value) => {
+            return buildUpdateChain([...filters, { column, value }]);
+          };
+
+          return {
+            eq: addFilter,
+            then: async () => {
+              await this._initPromise;
+              const { collection, query, where, getDocs, doc, updateDoc } = window.firebaseFirestore;
+              const colRef = collection(this._db, 'travel_plans');
+              
+              // 只使用第一个过滤条件，其他条件在客户端过滤
+              let q = colRef;
+              if (filters.length > 0) {
+                q = query(colRef, where(filters[0].column, '==', filters[0].value));
+              }
+              
+              const snap = await getDocs(q);
+              let matches = [];
+              snap.forEach(doc => {
+                const row = doc.data();
+                // 应用所有过滤条件
+                const matchesAll = filters.every(f => row[f.column] === f.value);
+                if (matchesAll) {
+                  matches.push({ docId: doc.id, data: row });
+                }
+              });
+              
+              if (matches.length === 0) {
+                return { data: null, error: { message: 'Not found' } };
+              }
+              
+              // 更新第一个匹配的文档
+              const { docId, data: oldData } = matches[0];
+              const docRef = doc(this._db, 'travel_plans', docId);
+              const updated = { ...oldData, ...data, updated_at: new Date().toISOString() };
+              await updateDoc(docRef, updated);
+              return { data: [updated], error: null };
+            }
+          };
+        };
+        
+        // 让链式调用返回 thenable 对象，可以直接 await
+        return {
+          eq: (column, value) => {
+            const next = buildUpdateChain([{ column, value }]);
+            // 返回一个 thenable 对象，可以直接 await
+            const thenable = {
+              eq: (col, val) => {
+                const nextChain = buildUpdateChain([{ column, value }, { column: col, value: val }]);
+                return {
+                  eq: nextChain.eq,
+                  then: nextChain.then,
+                  catch: (fn) => nextChain.then().catch(fn)
+                };
+              },
+              then: next.then,
+              catch: (fn) => next.then().catch(fn)
+            };
+            return thenable;
           }
-          const docRef = doc(this._db, 'travel_plans', snap.docs[0].id);
-          const updated = { ...snap.docs[0].data(), ...data, updated_at: new Date().toISOString() };
-          await updateDoc(docRef, updated);
-          return { data: [updated], error: null };
-        }
-      }),
-      delete: () => ({
-        eq: async (column, value) => {
-          await this._initPromise;
-          const { collection, query, where, getDocs, doc, deleteDoc } = window.firebaseFirestore;
-          const colRef = collection(this._db, 'travel_plans');
-          const q = query(colRef, where(column, '==', value));
-          const snap = await getDocs(q);
-          if (snap.empty) {
-            return { data: null, error: { message: 'Not found' } };
+        };
+      },
+      delete: () => {
+        const buildDeleteChain = (filters = []) => {
+          const addFilter = (column, value) => {
+            return buildDeleteChain([...filters, { column, value }]);
+          };
+
+          return {
+            eq: addFilter,
+            then: async () => {
+              await this._initPromise;
+              const { collection, query, where, getDocs, doc, deleteDoc } = window.firebaseFirestore;
+              const colRef = collection(this._db, 'travel_plans');
+              
+              // 只使用第一个过滤条件，其他条件在客户端过滤
+              let q = colRef;
+              if (filters.length > 0) {
+                q = query(colRef, where(filters[0].column, '==', filters[0].value));
+              }
+              
+              const snap = await getDocs(q);
+              let matches = [];
+              snap.forEach(doc => {
+                const row = doc.data();
+                // 应用所有过滤条件
+                const matchesAll = filters.every(f => row[f.column] === f.value);
+                if (matchesAll) {
+                  matches.push({ docId: doc.id, data: row });
+                }
+              });
+              
+              if (matches.length === 0) {
+                return { data: null, error: { message: 'Not found' } };
+              }
+              
+              // 删除第一个匹配的文档
+              const { docId, data: deletedData } = matches[0];
+              await deleteDoc(doc(this._db, 'travel_plans', docId));
+              return { data: [deletedData], error: null };
+            }
+          };
+        };
+        
+        return {
+          eq: (column, value) => {
+            const next = buildDeleteChain([{ column, value }]);
+            // 返回一个 thenable 对象，可以直接 await
+            const thenable = {
+              eq: (col, val) => {
+                const nextChain = buildDeleteChain([{ column, value }, { column: col, value: val }]);
+                return {
+                  eq: nextChain.eq,
+                  then: nextChain.then,
+                  catch: (fn) => nextChain.then().catch(fn)
+                };
+              },
+              then: next.then,
+              catch: (fn) => next.then().catch(fn)
+            };
+            return thenable;
           }
-          const docId = snap.docs[0].id;
-          const data = snap.docs[0].data();
-          await deleteDoc(doc(this._db, 'travel_plans', docId));
-          return { data: [data], error: null };
-        }
-      })
+        };
+      }
     };
 
     return api;
@@ -370,5 +533,19 @@ export function saveFirebaseConfig(config) {
     localStorage.removeItem('firebase_config');
   }
   supabaseInstance = null;
+}
+
+// 仅用于开发调试：在浏览器控制台访问 Supabase 兼容客户端
+if (typeof window !== 'undefined') {
+  try {
+    Object.defineProperty(window, '__getSupabase', {
+      configurable: true,
+      enumerable: false,
+      writable: false,
+      value: () => getSupabase()
+    });
+  } catch {
+    // 忽略定义失败
+  }
 }
 
