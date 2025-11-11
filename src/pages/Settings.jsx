@@ -17,6 +17,7 @@ export default function Settings() {
   const [supabaseAnonKey, setSupabaseAnonKey] = useState('');
 
   useEffect(() => {
+    // 加载配置
     const cfg = getRuntimeConfig();
     // setLlmBaseUrl(cfg.llm.baseUrl || '');
     setLlmBaseUrl(cfg.llm.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1');

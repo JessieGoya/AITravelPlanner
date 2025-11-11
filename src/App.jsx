@@ -1,9 +1,11 @@
-import { Link, Outlet, Routes, Route, useNavigate } from 'react-router-dom';
+import { Link, Outlet, Routes, Route, useNavigate, Navigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import Planner from './pages/Planner';
 import Budget from './pages/Budget';
 import Settings from './pages/Settings';
+import Profile from './pages/Profile';
 import Login from './pages/Login';
+import ProtectedRoute from './components/ProtectedRoute';
 
 const USER_KEY = 'demo_user_v1';
 
@@ -52,7 +54,7 @@ function Layout() {
           <Link to="/budget">费用预算</Link>
           <Link to="/settings">设置</Link>
           {user ? (
-            <Link to="/login" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Link to="/profile" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: '13px', color: 'var(--muted)' }}>{user.name}</span>
               <span style={{ fontSize: '12px' }}>👤</span>
             </Link>
@@ -85,15 +87,112 @@ function NotFound() {
   );
 }
 
+// 登录页面布局（不显示导航栏）
+function LoginLayout() {
+  return (
+    <div className="app-root">
+      <main className="app-main" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <Outlet />
+      </main>
+    </div>
+  );
+}
+
+// 已登录用户访问登录页面时重定向到主页
+function LoginRedirect() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const checkUser = () => {
+      try {
+        const raw = localStorage.getItem(USER_KEY);
+        if (raw) {
+          const u = JSON.parse(raw);
+          setUser(u);
+        } else {
+          setUser(null);
+        }
+      } catch (e) {
+        setUser(null);
+      }
+      setLoading(false);
+    };
+    checkUser();
+  }, []);
+
+  if (loading) {
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100vh',
+        fontSize: '16px',
+        color: 'var(--muted)'
+      }}>
+        加载中...
+      </div>
+    );
+  }
+
+  if (user) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <Login />;
+}
+
 export default function App() {
   return (
     <Routes>
+      {/* 登录页面路由（独立布局） */}
+      <Route path="/login" element={<LoginLayout />}>
+        <Route index element={<LoginRedirect />} />
+      </Route>
+      
+      {/* 主应用路由（需要登录） */}
       <Route path="/" element={<Layout />}>
-        <Route index element={<Planner />} />
-        <Route path="budget" element={<Budget />} />
-        <Route path="settings" element={<Settings />} />
-        <Route path="login" element={<Login />} />
-        <Route path="*" element={<NotFound />} />
+        <Route 
+          index 
+          element={
+            <ProtectedRoute>
+              <Planner />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="budget" 
+          element={
+            <ProtectedRoute>
+              <Budget />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="settings" 
+          element={
+            <ProtectedRoute>
+              <Settings />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="profile" 
+          element={
+            <ProtectedRoute>
+              <Profile />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="*" 
+          element={
+            <ProtectedRoute>
+              <NotFound />
+            </ProtectedRoute>
+          } 
+        />
       </Route>
     </Routes>
   );

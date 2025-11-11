@@ -239,170 +239,172 @@ export default function Planner() {
   };
 
   return (
-    <div className="grid cols-2">
-      <div className="card">
-        <div className="section-title">需求输入</div>
-        <div className="col">
-          <label>目的地</label>
-          <input className="input" value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="如：日本东京" />
-        </div>
-        <div className="grid cols-3" style={{ marginTop: 12 }}>
+    <div className="col" style={{ gap: 20 }}>
+      {/* 上半部分：需求输入（左侧）和地图（右侧） */}
+      <div className="grid planner-top-grid" style={{ gap: 20 }}>
+        {/* 左侧：需求输入（缩小） */}
+        <div className="card" style={{ minWidth: 0 }}>
+          <div className="section-title">需求输入</div>
           <div className="col">
-            <label>天数</label>
-            <input className="input" type="number" min={1} value={days} onChange={(e) => setDays(Number(e.target.value))} />
+            <label>目的地</label>
+            <input className="input" value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="如：日本东京" />
           </div>
-          <div className="col">
-            <label>预算（元）</label>
-            <input className="input" type="number" min={0} value={budget} onChange={(e) => setBudget(Number(e.target.value))} />
-          </div>
-          <div className="col">
-            <label>人数</label>
-            <input className="input" type="number" min={1} value={people} onChange={(e) => setPeople(Number(e.target.value))} />
-          </div>
-        </div>
-        <div className="col" style={{ marginTop: 12 }}>
-          <label>偏好</label>
-          <div className="row" style={{ flexWrap: 'wrap' }}>
-            {PREFERENCES.map((p) => (
-              <button
-                key={p}
-                className="btn secondary"
-                onClick={() => togglePref(p)}
-                style={{ opacity: prefs.includes(p) ? 1 : 0.6 }}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="col" style={{ marginTop: 12 }}>
-          <label>语音/文字输入 {parsing && <span className="muted" style={{ fontSize: '12px' }}>（正在解析...）</span>}</label>
-          <VoiceInput onText={(t) => {
-            // 如果已有文本，追加新文本；否则直接设置
-            setInputText(prev => prev ? `${prev}，${t}` : t);
-          }} />
-          <textarea
-            className="input"
-            placeholder="请输入语音或文字，例如：我想去日本，5 天，预算 1 万元，喜欢美食和动漫，带孩子"
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            rows={3}
-          />
-          {inputText && (
-            <div className="muted" style={{ fontSize: '12px', marginTop: 4 }}>
-              提示：系统会自动从您的输入中提取目的地、天数、预算等信息。可以多次使用语音输入来完善信息。
+          <div className="grid cols-3" style={{ marginTop: 12 }}>
+            <div className="col">
+              <label>天数</label>
+              <input className="input" type="number" min={1} value={days} onChange={(e) => setDays(Number(e.target.value))} />
             </div>
-          )}
-        </div>
-        
-        {startDate && (
-          <div className="col" style={{ marginTop: 12 }}>
-            <label>出发日期</label>
-            <input 
-              className="input" 
-              type="date" 
-              value={startDate} 
-              onChange={(e) => setStartDate(e.target.value)} 
-            />
+            <div className="col">
+              <label>预算（元）</label>
+              <input className="input" type="number" min={0} value={budget} onChange={(e) => setBudget(Number(e.target.value))} />
+            </div>
+            <div className="col">
+              <label>人数</label>
+              <input className="input" type="number" min={1} value={people} onChange={(e) => setPeople(Number(e.target.value))} />
+            </div>
           </div>
-        )}
+          <div className="col" style={{ marginTop: 12 }}>
+            <label>偏好</label>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              {PREFERENCES.map((p) => (
+                <button
+                  key={p}
+                  className="btn secondary"
+                  onClick={() => togglePref(p)}
+                  style={{ opacity: prefs.includes(p) ? 1 : 0.6, fontSize: '12px', padding: '4px 8px' }}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
 
-        <div className="row" style={{ marginTop: 12, gap: 8 }}>
-          <button className="btn" onClick={handlePlan} disabled={loading || !cfg.llm.apiKey}>
-            {loading ? '生成中…' : cfg.llm.apiKey ? '生成行程' : '请先到设置页配置 LLM Key'}
-          </button>
-          {user && (
-            <>
-              <button 
-                className="btn secondary" 
-                onClick={handleSavePlan} 
-                disabled={saving || !planOutput}
-              >
-                {saving ? '保存中…' : '保存行程'}
-              </button>
-              <button 
-                className="btn secondary" 
-                onClick={() => {
-                  setShowPlansList(!showPlansList);
-                  if (!showPlansList) {
-                    loadPlans();
-                  }
-                }}
-              >
-                {showPlansList ? '隐藏' : '我的行程'}
-              </button>
-            </>
-          )}
-        </div>
-
-        {showPlansList && user && (
-          <div className="card" style={{ marginTop: 12 }}>
-            <div className="section-title">我的行程列表</div>
-            {savedPlans.length === 0 ? (
-              <div className="muted" style={{ padding: '20px', textAlign: 'center' }}>
-                暂无已保存的行程
-              </div>
-            ) : (
-              <div className="col" style={{ gap: 8 }}>
-                {savedPlans.map((plan) => (
-                  <div 
-                    key={plan.id} 
-                    className="row" 
-                    style={{ 
-                      justifyContent: 'space-between', 
-                      alignItems: 'center',
-                      padding: '12px',
-                      background: 'var(--bg-secondary)',
-                      borderRadius: '8px',
-                      border: currentPlanId === plan.id ? '2px solid var(--primary)' : '1px solid var(--border)'
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                        {plan.destination || '未命名行程'}
-                      </div>
-                      <div className="muted" style={{ fontSize: '12px' }}>
-                        {plan.days}天 · {plan.people}人 · ¥{plan.budget.toLocaleString()}
-                        {plan.start_date && ` · ${plan.start_date}`}
-                      </div>
-                      {plan.created_at && (
-                        <div className="muted" style={{ fontSize: '11px', marginTop: 4 }}>
-                          {new Date(plan.created_at).toLocaleString('zh-CN')}
-                        </div>
-                      )}
-                    </div>
-                    <div className="row" style={{ gap: 8 }}>
-                      <button 
-                        className="btn secondary" 
-                        style={{ fontSize: '12px', padding: '6px 12px' }}
-                        onClick={() => handleLoadPlan(plan.id)}
-                      >
-                        加载
-                      </button>
-                      <button 
-                        className="btn secondary" 
-                        style={{ fontSize: '12px', padding: '6px 12px' }}
-                        onClick={() => handleDeletePlan(plan.id)}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                ))}
+          <div className="col" style={{ marginTop: 12 }}>
+            <label>语音/文字输入 {parsing && <span className="muted" style={{ fontSize: '11px' }}>（正在解析...）</span>}</label>
+            <VoiceInput onText={(t) => {
+              // 如果已有文本，追加新文本；否则直接设置
+              setInputText(prev => prev ? `${prev}，${t}` : t);
+            }} />
+            <textarea
+              className="input"
+              placeholder="请输入语音或文字，例如：我想去日本，5 天，预算 1 万元，喜欢美食和动漫，带孩子"
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              rows={2}
+              style={{ fontSize: '13px' }}
+            />
+            {inputText && (
+              <div className="muted" style={{ fontSize: '11px', marginTop: 4 }}>
+                提示：系统会自动从您的输入中提取目的地、天数、预算等信息。
               </div>
             )}
           </div>
-        )}
-      </div>
+          
+          {startDate && (
+            <div className="col" style={{ marginTop: 12 }}>
+              <label>出发日期</label>
+              <input 
+                className="input" 
+                type="date" 
+                value={startDate} 
+                onChange={(e) => setStartDate(e.target.value)} 
+                style={{ fontSize: '13px' }}
+              />
+            </div>
+          )}
 
-      <div className="col" style={{ gap: 16 }}>
-        <div className="card">
+          <div className="row" style={{ marginTop: 12, gap: 6, flexWrap: 'wrap' }}>
+            <button className="btn" onClick={handlePlan} disabled={loading || !cfg.llm.apiKey} style={{ fontSize: '13px', padding: '8px 12px' }}>
+              {loading ? '生成中…' : cfg.llm.apiKey ? '生成行程' : '请先配置 LLM Key'}
+            </button>
+            {user && (
+              <>
+                <button 
+                  className="btn secondary" 
+                  onClick={handleSavePlan} 
+                  disabled={saving || !planOutput}
+                  style={{ fontSize: '13px', padding: '8px 12px' }}
+                >
+                  {saving ? '保存中…' : '保存'}
+                </button>
+                <button 
+                  className="btn secondary" 
+                  onClick={() => {
+                    setShowPlansList(!showPlansList);
+                    if (!showPlansList) {
+                      loadPlans();
+                    }
+                  }}
+                  style={{ fontSize: '13px', padding: '8px 12px' }}
+                >
+                  {showPlansList ? '隐藏' : '我的行程'}
+                </button>
+              </>
+            )}
+          </div>
+
+          {showPlansList && user && (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div className="section-title" style={{ fontSize: '14px' }}>我的行程列表</div>
+              {savedPlans.length === 0 ? (
+                <div className="muted" style={{ padding: '16px', textAlign: 'center', fontSize: '12px' }}>
+                  暂无已保存的行程
+                </div>
+              ) : (
+                <div className="col" style={{ gap: 6 }}>
+                  {savedPlans.map((plan) => (
+                    <div 
+                      key={plan.id} 
+                      className="row" 
+                      style={{ 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        padding: '8px',
+                        background: 'var(--bg-secondary)',
+                        borderRadius: '6px',
+                        border: currentPlanId === plan.id ? '2px solid var(--primary)' : '1px solid var(--border)'
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 2, fontSize: '13px' }}>
+                          {plan.destination || '未命名行程'}
+                        </div>
+                        <div className="muted" style={{ fontSize: '11px' }}>
+                          {plan.days}天 · {plan.people}人 · ¥{plan.budget.toLocaleString()}
+                          {plan.start_date && ` · ${plan.start_date}`}
+                        </div>
+                      </div>
+                      <div className="row" style={{ gap: 6 }}>
+                        <button 
+                          className="btn secondary" 
+                          style={{ fontSize: '11px', padding: '4px 8px' }}
+                          onClick={() => handleLoadPlan(plan.id)}
+                        >
+                          加载
+                        </button>
+                        <button 
+                          className="btn secondary" 
+                          style={{ fontSize: '11px', padding: '4px 8px' }}
+                          onClick={() => handleDeletePlan(plan.id)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 右侧：地图（放大） */}
+        <div className="card" style={{ minWidth: 0 }}>
           <div className="section-title">
             地图
             {parsingPlaces && <span className="muted" style={{ fontSize: '12px', marginLeft: 8 }}>（正在解析地点...）</span>}
           </div>
-          <div className="row" style={{ marginBottom: 8, gap: 8, alignItems: 'center' }}>
+          <div className="row" style={{ marginBottom: 8, gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <label style={{ fontSize: '12px' }}>路线类型：</label>
             <select 
               className="input" 
@@ -437,11 +439,15 @@ export default function Planner() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* 下半部分：AI 规划结果（全宽） */}
+      {planOutput && (
         <div className="card">
           <div className="section-title">AI 规划结果</div>
           <MarkdownPreview content={planOutput} />
         </div>
-      </div>
+      )}
     </div>
   );
 }

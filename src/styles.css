@@ -40,7 +40,11 @@ body {
 .grid { display: grid; gap: 16px; }
 .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 900px) { .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; } }
+.planner-top-grid { grid-template-columns: 1fr 2fr; }
+@media (max-width: 900px) { 
+  .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; }
+  .planner-top-grid { grid-template-columns: 1fr; }
+}
 
 .map { width: 100%; height: 420px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
 .muted { color: var(--muted); }

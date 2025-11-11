@@ -115,6 +115,8 @@ docker run -d -p 8080:8080 --name ai-travel-planner-java ai-travel-planner-java:
 高德地图：
 key名称：TravelMap
 key: e07004e9b0f165cae3b501f807717b95
+这个key好像是对的？
+3b4bbe1326b3bd689bd946deb9191387
 
 模型：
 api-key = "sk-f6311402ec014de182f09486ea64ed98"
