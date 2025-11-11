@@ -123,8 +123,10 @@ export default function Planner() {
         try {
           const parsedPlaces = await parsePlacesFromPlan(res, destination);
           const parsedRoutes = parseRouteSequence(res);
+          // 限制天数不超过用户请求的天数，避免错误解析导致的“多出天数”
+          const limitedRoutes = Array.isArray(parsedRoutes) ? parsedRoutes.slice(0, Math.max(0, Number(days) || 0)) : [];
           setPlaces(parsedPlaces);
-          setRouteSequence(parsedRoutes);
+          setRouteSequence(limitedRoutes);
         } catch (error) {
           console.error('解析地点和路线失败:', error);
         } finally {

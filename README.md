@@ -129,6 +129,29 @@ model="qwen-plus"
 superabase:
 密码：123456Aa_
 
+firebase:
+
+```
+<script type="module">
+  // Import the functions you need from the SDKs you need
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+  // TODO: Add SDKs for Firebase products that you want to use
+  // https://firebase.google.com/docs/web/setup#available-libraries
+
+  // Your web app's Firebase configuration
+  const firebaseConfig = {
+    apiKey: "AIzaSyD7pgj2C53TaNXwni8l2OecBMNHXgo6N6U",
+    authDomain: "aitravelplanner-b12ec.firebaseapp.com",
+    projectId: "aitravelplanner-b12ec",
+    storageBucket: "aitravelplanner-b12ec.firebasestorage.app",
+    messagingSenderId: "1033128315933",
+    appId: "1:1033128315933:web:756ce04706feab4f9c8af4"
+  };
+
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+</script>
+```
 
 测试结果：
 ```

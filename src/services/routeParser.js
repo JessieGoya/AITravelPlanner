@@ -135,7 +135,11 @@ export function parseRouteSequence(planText) {
     if (currentDay == null) return;
     const content = currentBuffer.join('\n').trim();
     if (!content) return;
-    const places = extractPlaceNames(content);
+    // 先严格抽取地点；若为空，再使用宽松抽取，确保每一天尽量有结果
+    let places = extractPlaceNames(content);
+    if (!places || places.length === 0) {
+      places = extractPlaceNamesLoose(content);
+    }
     if (places.length > 0) {
       daySections.push({ day: currentDay, places });
     }
@@ -165,13 +169,14 @@ export function parseRouteSequence(planText) {
       return;
     }
 
-    const dayMatch = cleaned.match(/^(?:第\s*([一二三四五六七八九十百千万\d]+)\s*天|第\s*([一二三四五六七八九十百千万\d]+)\s*日|第\s*([一二三四五六七八九十百千万\d]+)\s*晚|Day\s*(\d+)|DAY\s*(\d+))/i);
+    // 更全面的“第N天/日/晚/行程 Day N”标题识别（允许前后含有中文或符号）
+    const dayMatch = cleaned.match(/^(?:\s*第\s*([一二三四五六七八九十百千万\d]+)\s*(?:天|日|晚|天行程)|\s*行程第\s*([一二三四五六七八九十百千万\d]+)\s*(?:天|日)|\s*Day\s*(\d+)|\s*DAY\s*(\d+))/i);
     if (dayMatch) {
       commitCurrent();
-      currentDay = parseDayNumber(dayMatch[1] || dayMatch[2] || dayMatch[3] || dayMatch[4] || dayMatch[5]);
+      currentDay = parseDayNumber(dayMatch[1] || dayMatch[2] || dayMatch[3] || dayMatch[4]);
       currentBuffer = [];
       const remainder = cleaned
-        .replace(/^(?:第\s*[一二三四五六七八九十百千万\d]+\s*(?:天|日|晚)|Day\s*\d+|DAY\s*\d+)/i, '')
+        .replace(/^(?:\s*第\s*[一二三四五六七八九十百千万\d]+\s*(?:天|日|晚|天行程)|\s*行程第\s*[一二三四五六七八九十百千万\d]+\s*(?:天|日)|\s*Day\s*\d+|\s*DAY\s*\d+)/i, '')
         .replace(/^[:：\-——|｜\s]+/, '')
         .trim();
       if (remainder) currentBuffer.push(remainder);
@@ -183,7 +188,10 @@ export function parseRouteSequence(planText) {
   commitCurrent();
 
   if (daySections.length === 0) {
-    const allPlaces = extractPlaceNames(planText);
+    let allPlaces = extractPlaceNames(planText);
+    if (!allPlaces || allPlaces.length === 0) {
+      allPlaces = extractPlaceNamesLoose(planText);
+    }
     return allPlaces.length > 0 ? [allPlaces] : [];
   }
 
@@ -251,5 +259,43 @@ function extractPlaceNames(text) {
   });
 
   return Array.from(found);
+}
+
+/**
+ * 宽松的地点抽取：
+ * - 支持用顿号/逗号/分号/箭头/连字符分隔的清单
+ * - 允许没有典型后缀的地名（如“外滩”“豫园”“人民广场”）
+ * - 基于黑名单过滤明显的非地点词
+ */
+function extractPlaceNamesLoose(text) {
+  const blacklist = /(早上|上午|中午|下午|晚上|早餐|午餐|晚餐|用餐|返回|入住|退房|集合|出发|抵达|门票|费用|预算|交通|打车|地铁|公交|步行|乘坐|乘车|到达|前往|游览|参观|购物|休息|自由活动|酒店|青旅|旅馆|宾馆|机场|车站|火车站|高铁站|码头|站|路程|公里|小时|分钟|安排|路线|行程|Day|DAY|第.*天)/;
+  // 将文本按标点拆开，再把形如 “A→B→C” “A - B - C” 再拆分
+  const segments = text
+    .replace(/[\t ]+/g, ' ')
+    .split(/[\n。；;]+/)
+    .flatMap(seg => seg.split(/[→\-·—~～]+/))
+    .flatMap(seg => seg.split(/[、，,|｜]/))
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const candidates = [];
+  const seen = new Set();
+  for (const s of segments) {
+    if (!s) continue;
+    // 去除无关提示尾巴
+    const name = s.replace(/^(?:前往|打卡|游览|参观|途经|集合于|抵达|到达|出发至|出发到|入住于|入住|退房后前往)\s*/, '')
+                  .replace(/\s*(?:集合|结束|返回|入住|用餐|自由活动|休息|酒店|青旅|旅馆|宾馆)$/, '')
+                  .trim();
+    if (!name) continue;
+    if (name.length < 2 || name.length > 50) continue;
+    if (blacklist.test(name)) continue;
+    // 简单过滤包含明显动词/时间词的长句
+    if (name.includes('，') || name.includes('。') || /\d{1,2}[:：]\d{2}/.test(name)) continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      candidates.push(name);
+    }
+  }
+  return candidates;
 }
 

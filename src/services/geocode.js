@@ -228,10 +228,11 @@ function waitForAmap(key) {
         if (window.AMap.plugin) {
           try {
             let callbackCalled = false;
+            let pluginLoadResolved = false;
             
             window.AMap.plugin(pluginsToLoad, () => {
               callbackCalled = true;
-              clearTimeout(pluginTimeout);
+              if (pluginLoadResolved) return; // 防止重复resolve
               
               // 插件加载回调，等待插件真正可用
               let attempts = 0;
@@ -250,8 +251,17 @@ function waitForAmap(key) {
                   return true;
                 });
 
-                if (allLoaded || attempts >= maxAttempts || Date.now() - startTime > TIMEOUT) {
+                if (allLoaded) {
                   clearInterval(checkPlugins);
+                  clearTimeout(pluginTimeout);
+                  pluginLoadResolved = true;
+                  console.log('高德地图插件加载成功:', pluginsToLoad);
+                  resolvePlugins();
+                } else if (attempts >= maxAttempts || Date.now() - startTime > TIMEOUT) {
+                  clearInterval(checkPlugins);
+                  clearTimeout(pluginTimeout);
+                  pluginLoadResolved = true;
+                  console.warn('高德地图插件加载超时，但继续尝试使用');
                   resolvePlugins();
                 }
               }, CHECK_INTERVAL);
@@ -259,7 +269,7 @@ function waitForAmap(key) {
             
             // 如果插件已经加载，回调可能不会立即调用，检查一下
             setTimeout(() => {
-              if (!callbackCalled) {
+              if (!callbackCalled && !pluginLoadResolved) {
                 const allLoaded = pluginsToLoad.every(pluginName => {
                   const parts = pluginName.split('.');
                   let obj = window.AMap;
@@ -272,6 +282,8 @@ function waitForAmap(key) {
                 
                 if (allLoaded) {
                   clearTimeout(pluginTimeout);
+                  pluginLoadResolved = true;
+                  console.log('高德地图插件已存在:', pluginsToLoad);
                   resolvePlugins();
                 }
               }
@@ -288,6 +300,7 @@ function waitForAmap(key) {
           clearTimeout(pluginTimeout);
           // 如果没有 plugin 方法，可能是旧版本 API 或插件已包含在主脚本中
           // 等待一段时间让插件加载
+          console.warn('高德地图 plugin 方法不可用，等待插件自动加载');
           setTimeout(() => {
             resolvePlugins();
           }, 1000);
@@ -401,22 +414,38 @@ async function planRouteAmap(points, strategy, key) {
       return;
     }
 
+    // 检查必要的插件是否已加载
     let routeService;
-    if (strategy === 'walking') {
-      routeService = new window.AMap.Walking({
-        map: null
-      });
-    } else if (strategy === 'transit') {
-      routeService = new window.AMap.Transit({
-        map: null,
-        city: '全国'
-      });
-    } else {
-      // 驾车路线
-      routeService = new window.AMap.Driving({
-        map: null,
-        strategy: window.AMap.Driving.LEAST_TIME // 速度优先
-      });
+    try {
+      if (strategy === 'walking') {
+        if (!window.AMap.Walking) {
+          throw new Error('高德地图 Walking 插件未加载。请确保使用的是"Web端（JS API）"类型的 Key，并且插件已正确加载。');
+        }
+        routeService = new window.AMap.Walking({
+          map: null
+        });
+      } else if (strategy === 'transit') {
+        if (!window.AMap.Transit) {
+          throw new Error('高德地图 Transit 插件未加载。请确保使用的是"Web端（JS API）"类型的 Key，并且插件已正确加载。');
+        }
+        routeService = new window.AMap.Transit({
+          map: null,
+          city: '全国'
+        });
+      } else {
+        // 驾车路线
+        if (!window.AMap.Driving) {
+          throw new Error('高德地图 Driving 插件未加载。请确保使用的是"Web端（JS API）"类型的 Key，并且插件已正确加载。');
+        }
+        routeService = new window.AMap.Driving({
+          map: null,
+          strategy: window.AMap.Driving.LEAST_TIME // 速度优先
+        });
+      }
+    } catch (pluginError) {
+      console.error('路线规划插件错误:', pluginError);
+      reject(pluginError);
+      return;
     }
 
     // 处理途经点：如果有途经点，需要分段规划

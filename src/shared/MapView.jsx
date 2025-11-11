@@ -16,6 +16,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
   const mapRef = useRef(null);
   const markersRef = useRef([]);
   const polylinesRef = useRef([]);
+  const [progress, setProgress] = useState({ active: false, percent: 0, message: '' });
   const [mapReady, setMapReady] = useState(false);
   const cfg = getRuntimeConfig();
 
@@ -70,6 +71,14 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     );
   };
 
+  // 为地点生成复合键（用于唯一标识），避免名称冲突
+  const compositeKey = (p) => {
+    const n = normalizeName(p?.name || '');
+    const lng = typeof p?.lng === 'number' ? p.lng.toFixed(6) : 'NaN';
+    const lat = typeof p?.lat === 'number' ? p.lat.toFixed(6) : 'NaN';
+    return `${n}|${lng}|${lat}`;
+  };
+
   // 名称匹配：与路线匹配时用到，与下方路线匹配逻辑保持一致
   const isNameMatch = (a, b) => {
     const na = (a || '').trim();
@@ -82,21 +91,55 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     return !!sa && !!sb && (sa === sb || sa.includes(sb) || sb.includes(sa));
   };
 
-  // 根据 routeSequence 计算每个地点的 dayIndex，返回 Map<规范化名称, dayIndex>
+  // 根据 routeSequence 计算每个地点的 dayIndex
+  // 返回 Map<复合键 name|lng|lat, dayIndex>，避免同名地点跨天混淆
   const computePlaceDayIndexMap = (allPlaces, sequence) => {
-    const map = new Map();
-    if (!sequence || sequence.length === 0) return map;
+    const keyToDay = new Map();
+    if (!Array.isArray(allPlaces) || !Array.isArray(sequence) || sequence.length === 0) return keyToDay;
+
+    // 为每个规范化名称建立候选索引列表（可能有重复同名）
+    const nameToIndices = new Map();
+    for (let i = 0; i < allPlaces.length; i++) {
+      const p = allPlaces[i];
+      const norm = normalizeName(p?.name || '');
+      if (!norm) continue;
+      if (!nameToIndices.has(norm)) nameToIndices.set(norm, []);
+      nameToIndices.get(norm).push(i);
+    }
+    // 跟踪已分配到某天的具体地点索引，避免同一实体跨天复用
+    const assignedIndex = new Set();
+
+    // 按天按顺序，为每个目标名称选择一个尚未分配的最佳候选
     for (let dayIndex = 0; dayIndex < sequence.length; dayIndex++) {
       const dayPlaces = sequence[dayIndex] || [];
       for (const targetName of dayPlaces) {
-        // 找到与 allPlaces 中匹配的条目，把其 name 作为 key
-        const found = (allPlaces || []).find(p => isNameMatch(p.name, targetName));
-        if (found && found.name && !map.has(found.name)) {
-          map.set(found.name, dayIndex);
+        const normTarget = normalizeName(targetName || '');
+        if (!normTarget) continue;
+        const candidates = (nameToIndices.get(normTarget) || [])
+          .filter(idx => !assignedIndex.has(idx));
+        if (candidates.length === 0) {
+          // 回退：在所有地点里做宽松匹配，找一个未分配的
+          const idx = allPlaces.findIndex((p, i) => !assignedIndex.has(i) && isNameMatch(p?.name, targetName));
+          if (idx >= 0) {
+            assignedIndex.add(idx);
+            const key = compositeKey(allPlaces[idx]);
+            keyToDay.set(key, dayIndex);
+          }
+          continue;
         }
+        // 优先：完全相等的名称
+        let chosen = candidates.find(i => (allPlaces[i]?.name || '').trim() === (targetName || '').trim());
+        if (chosen == null) {
+          // 次之：更长名称（更具体）
+          chosen = candidates.sort((a, b) => (allPlaces[b]?.name || '').length - (allPlaces[a]?.name || '').length)[0];
+        }
+        if (chosen == null) chosen = candidates[0];
+        assignedIndex.add(chosen);
+        const key = compositeKey(allPlaces[chosen]);
+        keyToDay.set(key, dayIndex);
       }
     }
-    return map;
+    return keyToDay;
   };
 
   // 辅助：增强的地理编码，尝试多种查询组合（名称/地址 + 目的地上下文）
@@ -368,8 +411,11 @@ export default function MapView({ destination, places = [], routeSequence = [], 
       script.async = true;
       script.onload = () => {
         const checkInterval = setInterval(() => {
-          if ((provider === 'baidu' && window.BMapGL && window.BMapGL.Map) ||
-              (provider === 'amap' && window.AMap && window.AMap.Map)) {
+          if (provider === 'amap' && window.AMap && window.AMap.Map) {
+            // 检查是否有高德地图的错误信息（通常在控制台，但我们可以检查一些全局错误）
+            clearInterval(checkInterval);
+            resolve();
+          } else if (provider === 'baidu' && window.BMapGL && window.BMapGL.Map) {
             clearInterval(checkInterval);
             resolve();
           }
@@ -380,11 +426,21 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               (provider === 'amap' && window.AMap && window.AMap.Map)) {
             resolve();
           } else {
-            reject(new Error('地图 API 加载超时'));
+            const errorMsg = provider === 'amap'
+              ? '高德地图 API 加载超时。可能原因：1) API Key 类型错误（需要"Web端（JS API）"类型）；2) 网络问题；3) Key 未启用或配置错误'
+              : '地图 API 加载超时';
+            reject(new Error(errorMsg));
           }
         }, 10000);
       };
-      script.onerror = () => reject(new Error('地图脚本加载失败'));
+      script.onerror = () => {
+        const errorMsg = provider === 'amap' 
+          ? '高德地图脚本加载失败。请检查：1) API Key 是否正确；2) 是否申请了"Web端（JS API）"类型的 Key（不是"Web服务"Key）；3) Key 是否已启用并配置了正确的安全密钥（如设置了域名白名单，请确保当前域名在白名单中）'
+          : provider === 'baidu'
+          ? '百度地图脚本加载失败。请检查 API Key 是否正确'
+          : '地图脚本加载失败';
+        reject(new Error(errorMsg));
+      };
       document.head.appendChild(script);
     });
   };
@@ -427,11 +483,74 @@ export default function MapView({ destination, places = [], routeSequence = [], 
           mapInstance.enableScrollWheelZoom(true);
         } else if (effectiveProvider === 'amap') {
           console.log('高德地图 API 已加载，创建地图实例');
-          mapInstance = new window.AMap.Map(ref.current, { 
-            zoom: 10, 
-            center: [116.397428, 39.90923],
-            viewMode: '3D'
-          });
+          try {
+            mapInstance = new window.AMap.Map(ref.current, { 
+              zoom: 10, 
+              center: [116.397428, 39.90923],
+              viewMode: '3D'
+            });
+            // 监听地图错误事件
+            mapInstance.on('error', (e) => {
+              console.error('高德地图错误:', e);
+              if (e && e.message) {
+                const errorMsg = e.message;
+                if (errorMsg.includes('USERKEY_PLAT_NOMATCH') || errorMsg.includes('INVALID_USER_KEY')) {
+                  throw new Error('API Key 类型错误：请确保申请的是"Web端（JS API）"类型的 Key，不是"Web服务"Key');
+                } else if (errorMsg.includes('INVALID_USER_SCODE')) {
+                  throw new Error('安全密钥验证失败：请检查安全密钥配置');
+                } else if (errorMsg.includes('DAILY_QUERY_OVER_LIMIT')) {
+                  throw new Error('API 调用次数超限：请检查配额或升级服务');
+                }
+              }
+            });
+            
+            // 加载必要的插件（用于路线规划）
+            if (window.AMap && window.AMap.plugin) {
+              const pluginsToLoad = ['AMap.Geocoder', 'AMap.Driving', 'AMap.Walking', 'AMap.Transit'];
+              const missingPlugins = pluginsToLoad.filter(pluginName => {
+                const parts = pluginName.split('.');
+                let obj = window.AMap;
+                for (const part of parts) {
+                  if (!obj || !obj[part]) return true;
+                  obj = obj[part];
+                }
+                return false;
+              });
+              
+              if (missingPlugins.length > 0) {
+                console.log('加载高德地图插件:', missingPlugins);
+                window.AMap.plugin(missingPlugins, () => {
+                  console.log('高德地图插件加载完成');
+                  // 验证插件是否真正加载
+                  const allLoaded = missingPlugins.every(pluginName => {
+                    const parts = pluginName.split('.');
+                    let obj = window.AMap;
+                    for (const part of parts) {
+                      if (!obj || !obj[part]) return false;
+                      obj = obj[part];
+                    }
+                    return true;
+                  });
+                  if (allLoaded) {
+                    console.log('所有高德地图插件已成功加载');
+                  } else {
+                    console.warn('部分高德地图插件可能未加载成功:', missingPlugins);
+                  }
+                });
+              } else {
+                console.log('所有高德地图插件已存在，无需加载');
+              }
+            } else {
+              console.warn('高德地图 plugin 方法不可用，插件可能已包含在主脚本中或需要手动加载');
+            }
+          } catch (initError) {
+            // 如果创建地图实例时抛出错误，检查是否是key相关错误
+            const errorMsg = initError.message || String(initError);
+            if (errorMsg.includes('USERKEY') || errorMsg.includes('KEY') || errorMsg.includes('key')) {
+              throw new Error('高德地图初始化失败：请检查 API Key 是否正确，并确保申请的是"Web端（JS API）"类型的 Key');
+            }
+            throw initError;
+          }
         } else if (effectiveProvider === 'osm') {
           console.log('OpenStreetMap (Leaflet) 已加载，创建地图实例');
           // 修复 Leaflet 图标路径
@@ -468,6 +587,17 @@ export default function MapView({ destination, places = [], routeSequence = [], 
       } catch (error) {
         console.error('地图初始化失败:', error);
         setMapReady(false);
+        // 显示错误提示
+        if (ref.current) {
+          const errorMsg = error.message || '地图初始化失败';
+          ref.current.innerHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px; text-align: center; color: var(--muted);">
+              <div style="font-size: 16px; margin-bottom: 10px; color: #fca5a5;">⚠️ 地图加载失败</div>
+              <div style="font-size: 13px; line-height: 1.6;">${errorMsg}</div>
+              ${effectiveProvider === 'amap' ? '<div style="font-size: 12px; margin-top: 10px; color: var(--muted);">提示：高德地图需要申请"Web端（JS API）"类型的 Key，不是"Web服务"Key</div>' : ''}
+            </div>
+          `;
+        }
       }
     };
 
@@ -561,6 +691,66 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     // 如果没有地点，不显示（但会由目的地定位useEffect处理）
     if (!places || !Array.isArray(places) || places.length === 0) return;
 
+    // 简易并发控制的 map（promise 并发限制）
+    const pMap = async (iterable, mapper, { concurrency = 4, onProgress } = {}) => {
+      const results = new Array(iterable.length);
+      let inFlight = 0;
+      let index = 0;
+      let resolved = 0;
+      return await new Promise((resolve) => {
+        const next = () => {
+          if (resolved === iterable.length) {
+            resolve(results);
+            return;
+          }
+          while (inFlight < concurrency && index < iterable.length) {
+            const currentIndex = index++;
+            inFlight++;
+            Promise.resolve()
+              .then(() => mapper(iterable[currentIndex], currentIndex))
+              .then((res) => {
+                results[currentIndex] = res;
+              })
+              .catch(() => {
+                results[currentIndex] = undefined;
+              })
+              .finally(() => {
+                inFlight--;
+                resolved++;
+                if (typeof onProgress === 'function') {
+                  onProgress(resolved, iterable.length);
+                }
+                next();
+              });
+          }
+        };
+        next();
+      });
+    };
+
+    // 批量向地图添加标记，避免主线程长时间阻塞
+    const addMarkersInBatches = async (coords, makeMarker, { batchSize = 20 } = {}) => {
+      for (let i = 0; i < coords.length; i += batchSize) {
+        const batch = coords.slice(i, i + batchSize);
+        for (const coord of batch) {
+          makeMarker(coord);
+        }
+        // 让出主线程，提升 UI 响应
+        await new Promise((r) => {
+          if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => r());
+          } else {
+            setTimeout(r, 0);
+          }
+        });
+        setProgress((prev) => ({
+          active: true,
+          percent: Math.min(95, prev.percent + Math.max(1, Math.round((batch.length / Math.max(1, coords.length)) * 35))),
+          message: `正在绘制标记（${Math.min(coords.length, i + batch.length)}/${coords.length}）`
+        }));
+      }
+    };
+
     const displayPlacesAndRoute = async () => {
       try {
         console.log('开始显示地点和路线，地点数量:', places.length, '路线序列:', routeSequence);
@@ -573,21 +763,32 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         let placeCoords = [];
         let destCenter = null;
         let destBoundary = null;
-        for (const place of places) {
-          let coord;
-          if (place.lng && place.lat) {
-            coord = { ...place, lng: place.lng, lat: place.lat };
-          } else {
+        setProgress({ active: true, percent: 3, message: '开始地理编码…' });
+        const geocodeResults = await pMap(
+          places,
+          async (place) => {
+            if (place && typeof place.lng === 'number' && typeof place.lat === 'number') {
+              return { ...place };
+            }
             try {
               const geocodeResult = await geocodeWithAugment(place, destination);
-              coord = { ...place, ...geocodeResult };
+              return { ...place, ...geocodeResult };
             } catch (error) {
-              console.warn(`无法获取地点 ${place.name} 的坐标:`, error);
-              continue;
+              console.warn(`无法获取地点 ${place?.name} 的坐标:`, error);
+              return undefined;
+            }
+          },
+          {
+            concurrency: 6,
+            onProgress: (done, total) => {
+              const base = 3;
+              const span = 30; // 地理编码阶段权重
+              const percent = base + Math.floor((done / Math.max(1, total)) * span);
+              setProgress({ active: true, percent, message: `地理编码中（${done}/${total}）…` });
             }
           }
-          placeCoords.push(coord);
-        }
+        );
+        placeCoords = geocodeResults.filter(Boolean);
 
         // 坐标去重，避免重复标记覆盖
         placeCoords = dedupeByCoordGrid(placeCoords);
@@ -595,6 +796,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         // 若提供了目的地，优先使用行政区边界过滤；若失败则回退半径过滤
         if (destination) {
           try {
+            setProgress((prev) => ({ active: true, percent: Math.max(prev.percent, 36), message: '获取目的地范围…' }));
             const destLoc = await geocode(destination);
             destCenter = destLoc;
             // 尝试获取行政区边界（GeoJSON）
@@ -634,6 +836,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
                 console.warn(`有 ${dropped} 个地点超出目的地范围（${radiusKm}km），已忽略。`);
               }
             }
+            setProgress((prev) => ({ active: true, percent: Math.max(prev.percent, 42), message: '范围过滤完成' }));
           } catch (e) {
             console.warn('无法定位目的地用于范围过滤，跳过范围限制。', e);
           }
@@ -649,13 +852,15 @@ export default function MapView({ destination, places = [], routeSequence = [], 
           // 实际应用中可能需要更复杂的切换逻辑
         }
 
-        // 计算每个地点属于哪一天（用于不同颜色/图案）
-        const nameToDayMap = computePlaceDayIndexMap(placeCoords, routeSequence);
+        // 计算每个地点属于哪一天（用于不同颜色/图案），基于复合键避免同名冲突
+        const keyToDayMap = computePlaceDayIndexMap(placeCoords, routeSequence);
 
         // 添加标记（按天显示不同颜色或图案）
-        for (const coord of placeCoords) {
-          const dayIndex = nameToDayMap.has(coord.name) ? nameToDayMap.get(coord.name) : undefined;
-          const markerStyle = dayIndex !== undefined ? getMarkerStyle(dayIndex) : { color: '#3388ff', pattern: 'solid' };
+        setProgress((prev) => ({ active: true, percent: Math.max(prev.percent, 45), message: '开始绘制标记…' }));
+        const makeMarker = (coord) => {
+          const key = compositeKey(coord);
+          const dayIndex = keyToDayMap.get(key);
+          const markerStyle = dayIndex !== undefined ? getMarkerStyle(dayIndex) : { color: '#999999', pattern: 'solid' };
           const iconUrl = buildSvgDataUrl(markerStyle.color, markerStyle.pattern);
 
           if (effectiveProvider === 'baidu') {
@@ -701,7 +906,8 @@ export default function MapView({ destination, places = [], routeSequence = [], 
             mapRef.current.add(marker);
             markersRef.current.push(marker);
           }
-        }
+        };
+        await addMarkersInBatches(placeCoords, makeMarker, { batchSize: 24 });
 
         console.log('已获取坐标的地点:', placeCoords.map(p => ({ name: p.name, lng: p.lng, lat: p.lat })));
 
@@ -709,6 +915,11 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         if (routeSequence && routeSequence.length > 0) {
           console.log('开始显示路线序列，天数:', routeSequence.length);
           for (let dayIndex = 0; dayIndex < routeSequence.length; dayIndex++) {
+            setProgress({
+              active: true,
+              percent: Math.min(98, 60 + Math.floor(((dayIndex) / Math.max(1, routeSequence.length)) * 35)),
+              message: `规划第 ${dayIndex + 1} 天路线…`
+            });
             const dayPlaces = routeSequence[dayIndex];
             if (!dayPlaces || dayPlaces.length < 2) {
               console.log(`第${dayIndex + 1}天地点数量不足，跳过`);
@@ -719,32 +930,27 @@ export default function MapView({ destination, places = [], routeSequence = [], 
 
             // 获取当天的地点坐标
             const dayCoords = [];
+            const usedIndexThisDay = new Set();
             for (const placeName of dayPlaces) {
-              // 从已获取坐标的地点中查找匹配的地点
-              const place = placeCoords.find(p => {
-                // 支持多种匹配方式，因为名称可能不完全一致
-                const normalizedName = (p.name || '').trim();
-                const normalizedPlaceName = (placeName || '').trim();
-                
-                // 完全匹配
-                if (normalizedName === normalizedPlaceName) return true;
-                
-                // 包含匹配（双向）
-                if (normalizedName.includes(normalizedPlaceName) || normalizedPlaceName.includes(normalizedName)) return true;
-                
-                // 去除常见后缀后匹配（如"景点"、"公园"等）
-                const suffixes = ['景点', '景区', '公园', '博物馆', '纪念馆', '寺', '庙', '塔', '广场', '大街', '路', '酒店', '餐厅', '饭店'];
-                const nameWithoutSuffix = suffixes.reduce((name, suffix) => name.replace(suffix, ''), normalizedName);
-                const placeNameWithoutSuffix = suffixes.reduce((name, suffix) => name.replace(suffix, ''), normalizedPlaceName);
-                if (nameWithoutSuffix === placeNameWithoutSuffix || 
-                    nameWithoutSuffix.includes(placeNameWithoutSuffix) || 
-                    placeNameWithoutSuffix.includes(nameWithoutSuffix)) {
-                  return true;
+              // 优先从已计算的 key->day 映射中选出属于当天的候选，避免跨天混淆
+              let placeIdx = -1;
+              for (let i = 0; i < placeCoords.length; i++) {
+                if (usedIndexThisDay.has(i)) continue;
+                const p = placeCoords[i];
+                const key = compositeKey(p);
+                const mappedDay = keyToDayMap.get(key);
+                if (mappedDay === dayIndex && isNameMatch(p?.name, placeName)) {
+                  placeIdx = i;
+                  break;
                 }
-                
-                return false;
-              });
-              if (place) {
+              }
+              // 回退：使用宽松匹配（无映射或解析新增地点）
+              if (placeIdx < 0) {
+                placeIdx = placeCoords.findIndex((p, i) => !usedIndexThisDay.has(i) && isNameMatch(p?.name, placeName));
+              }
+              if (placeIdx >= 0) {
+                const place = placeCoords[placeIdx];
+                usedIndexThisDay.add(placeIdx);
                 dayCoords.push({ lng: place.lng, lat: place.lat });
                 console.log(`找到地点 ${placeName} 的坐标:`, place.lng, place.lat, '匹配的地点:', place.name);
               } else {
@@ -858,6 +1064,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         } else if (placeCoords.length >= 2) {
           // 如果没有路线序列，但有多于一个地点，显示连接线
           console.log('没有路线序列，显示所有地点的连接线');
+          setProgress({ active: true, percent: 80, message: '规划整体路线…' });
           const effectiveProvider = getEffectiveProvider(placeCoords);
           try {
             const routePoints = await planRoute(
@@ -931,12 +1138,15 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         // 调整地图视野以包含所有地点
         if (placeCoords.length > 0 && mapRef.current) {
           console.log('调整地图视野，包含', placeCoords.length, '个地点');
+          setProgress((prev) => ({ active: true, percent: Math.max(prev.percent, 96), message: '调整视野…' }));
           adjustMapView(placeCoords);
         } else {
           console.warn('没有有效的地点坐标，无法调整地图视野');
         }
+        setProgress({ active: false, percent: 100, message: '' });
       } catch (error) {
         console.error('显示地点和路线失败:', error);
+        setProgress({ active: false, percent: 0, message: '' });
       }
     };
 
@@ -984,5 +1194,40 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     }
   };
 
-  return <div ref={ref} className="map" style={{ width: '100%', height: '420px', minHeight: '420px' }} />;
+  return (
+    <div style={{ position: 'relative' }}>
+      <div ref={ref} className="map" style={{ width: '100%', height: '420px', minHeight: '420px' }} />
+      {progress.active && (
+        <div
+          style={{
+            position: 'absolute',
+            left: 12,
+            bottom: 12,
+            zIndex: 999,
+            pointerEvents: 'none',
+            background: 'rgba(0,0,0,0.55)',
+            color: '#fff',
+            padding: '8px 10px',
+            borderRadius: 6,
+            fontSize: 12,
+            minWidth: 160,
+            maxWidth: '60%'
+          }}
+        >
+          <div style={{ marginBottom: 6 }}>{progress.message || '处理中…'}</div>
+          <div style={{ width: '100%', height: 6, background: 'rgba(255,255,255,0.25)', borderRadius: 4 }}>
+            <div
+              style={{
+                width: `${Math.max(5, Math.min(100, Math.floor(progress.percent || 0)))}%`,
+                height: '100%',
+                background: '#22c55e',
+                borderRadius: 4,
+                transition: 'width 180ms ease'
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
