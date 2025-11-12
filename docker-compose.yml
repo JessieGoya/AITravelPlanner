@@ -1,0 +1,19 @@
+services:
+  backend:
+    build:
+      context: ./backend-java
+      dockerfile: Dockerfile
+    container_name: ai-travel-backend
+    ports:
+      - "8081:8080"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-travel-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+

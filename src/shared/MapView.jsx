@@ -17,6 +17,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
   const markersRef = useRef([]);
   const polylinesRef = useRef([]);
   const restoredSignatureRef = useRef(null);
+  const lastSnapshotRef = useRef(null);
   const [progress, setProgress] = useState({ active: false, percent: 0, message: '' });
   const [mapReady, setMapReady] = useState(false);
   const cfg = getRuntimeConfig();
@@ -46,6 +47,20 @@ export default function MapView({ destination, places = [], routeSequence = [], 
   useEffect(() => {
     restoredSignatureRef.current = null;
   }, [inputSignature]);
+
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    if (!persistedState || typeof persistedState !== 'object') return;
+    const snapshotSignature = persistedState.signature || '__snapshot__';
+    if (restoredSignatureRef.current === snapshotSignature) return;
+    const signatureMatches = persistedState.signature && persistedState.signature === inputSignature;
+    const noCurrentMarkers = markersRef.current.length === 0 && polylinesRef.current.length === 0;
+    if (!signatureMatches && !noCurrentMarkers) return;
+    const restored = restoreSnapshot(persistedState);
+    if (restored) {
+      restoredSignatureRef.current = snapshotSignature;
+    }
+  }, [mapReady, persistedState, inputSignature]);
 
   // 获取路线颜色（根据天数）
   const getRouteColor = (dayIndex) => {
@@ -85,10 +100,78 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
   };
 
-  const ensureArrayLngLat = (path) =>
-    Array.isArray(path)
-      ? path.filter((p) => p && typeof p.lng === 'number' && typeof p.lat === 'number')
-      : [];
+  const ensureArrayLngLat = (path) => {
+    if (!Array.isArray(path)) return [];
+    return path
+      .map((point) => {
+        if (!point) return null;
+        if (typeof point.lng === 'number' && typeof point.lat === 'number') {
+          return {
+            ...point,
+            lng: Number(point.lng),
+            lat: Number(point.lat)
+          };
+        }
+        if (Array.isArray(point) && point.length >= 2) {
+          const [lng, lat] = point;
+          if (typeof lng === 'number' && typeof lat === 'number') {
+            return { lng: Number(lng), lat: Number(lat) };
+          }
+        }
+        const maybeLng = point?.x ?? point?.longitude ?? point?.lon;
+        const maybeLat = point?.y ?? point?.latitude ?? point?.lat;
+        if (typeof maybeLng === 'number' && typeof maybeLat === 'number') {
+          return {
+            ...point,
+            lng: Number(maybeLng),
+            lat: Number(maybeLat)
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  };
+
+  const normalizeSnapshotPlaces = (rawPlaces) => {
+    if (!Array.isArray(rawPlaces)) return [];
+    return rawPlaces
+      .map((place) => {
+        if (!place) return null;
+        const lng = typeof place.lng === 'number' ? Number(place.lng) : typeof place?.position?.lng === 'number' ? Number(place.position.lng) : null;
+        const lat = typeof place.lat === 'number' ? Number(place.lat) : typeof place?.position?.lat === 'number' ? Number(place.position.lat) : null;
+        if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+        return {
+          name: place.name || '',
+          address: place.address || '',
+          lng,
+          lat,
+          dayIndex: typeof place.dayIndex === 'number' ? place.dayIndex : null
+        };
+      })
+      .filter(Boolean);
+  };
+
+  const normalizeSnapshotPolylines = (rawPolylines) => {
+    if (!Array.isArray(rawPolylines)) return [];
+    return rawPolylines
+      .map((polyline) => {
+        if (!polyline) return null;
+        const path = ensureArrayLngLat(polyline.path || polyline.points || polyline.coords || []);
+        if (!Array.isArray(path) || path.length < 2) return null;
+        return {
+          path: path.map(({ lng, lat }) => ({ lng, lat })),
+          strokeColor: polyline.strokeColor || '#3388ff',
+          strokeWeight: typeof polyline.strokeWeight === 'number' ? polyline.strokeWeight : 3,
+          strokeOpacity: typeof polyline.strokeOpacity === 'number' ? polyline.strokeOpacity : 0.8,
+          strokeStyle: polyline.strokeStyle === 'dashed' ? 'dashed' : 'solid',
+          dayIndex: typeof polyline.dayIndex === 'number' ? polyline.dayIndex : null
+        };
+      })
+      .filter(Boolean);
+  };
+
+  const normalizeViewportCoords = (coords) =>
+    ensureArrayLngLat(Array.isArray(coords) ? coords : []);
 
   const getMapProviderInUse = () => {
     if (!mapRef.current) return cfg.map.provider;
@@ -498,6 +581,10 @@ export default function MapView({ destination, places = [], routeSequence = [], 
 
   const restoreSnapshot = (snapshot) => {
     if (!snapshot || typeof snapshot !== 'object') return false;
+    if (!mapRef.current) {
+      console.warn('地图尚未初始化，无法恢复快照');
+      return false;
+    }
     const providerInUse = getMapProviderInUse();
     if (snapshot.provider && snapshot.provider !== providerInUse) {
       console.warn('地图快照的提供商与当前地图不匹配，跳过恢复', {
@@ -510,11 +597,11 @@ export default function MapView({ destination, places = [], routeSequence = [], 
       clearMarkers();
       clearPolylines();
       const provider = providerInUse;
-      const snapshotPlaces = Array.isArray(snapshot.places) ? snapshot.places : [];
+      const snapshotPlaces = normalizeSnapshotPlaces(snapshot.places);
       snapshotPlaces.forEach((place) => {
         addMarkerToMap(place, place.dayIndex ?? null, provider);
       });
-      const snapshotPolylines = Array.isArray(snapshot.polylines) ? snapshot.polylines : [];
+      const snapshotPolylines = normalizeSnapshotPolylines(snapshot.polylines);
       snapshotPolylines.forEach((polyline) => {
         addPolylineToMap(
           polyline.path,
@@ -529,12 +616,20 @@ export default function MapView({ destination, places = [], routeSequence = [], 
           provider
         );
       });
-      const viewportCoords = Array.isArray(snapshot.viewportCoords) ? snapshot.viewportCoords : [];
+      const viewportCoords = normalizeViewportCoords(snapshot.viewportCoords);
       if (viewportCoords.length > 0) {
         adjustMapView(viewportCoords);
       } else if (snapshotPlaces.length > 0) {
         adjustMapView(snapshotPlaces);
       }
+      const normalizedSnapshot = {
+        provider,
+        places: snapshotPlaces,
+        polylines: snapshotPolylines,
+        viewportCoords: viewportCoords.length > 0 ? viewportCoords : snapshotPlaces.map(({ lng, lat }) => ({ lng, lat })),
+        signature: snapshot.signature || inputSignature
+      };
+      lastSnapshotRef.current = normalizedSnapshot;
       setProgress({ active: false, percent: 100, message: '' });
       return true;
     } catch (error) {
@@ -544,11 +639,26 @@ export default function MapView({ destination, places = [], routeSequence = [], 
   };
 
   const persistSnapshot = (data) => {
-    if (typeof onStatePersist !== 'function' || !data) return;
+    if (!data) return;
+    const normalizedPlaces = normalizeSnapshotPlaces(data.places);
+    const normalizedPolylines = normalizeSnapshotPolylines(data.polylines);
+    const normalizedViewport = normalizeViewportCoords(data.viewportCoords);
+    const snapshot = {
+      provider: data.provider || getMapProviderInUse(),
+      places: normalizedPlaces,
+      polylines: normalizedPolylines,
+      viewportCoords:
+        normalizedViewport.length > 0
+          ? normalizedViewport
+          : normalizedPlaces.map(({ lng, lat }) => ({ lng, lat })),
+      signature: inputSignature
+    };
+    restoredSignatureRef.current = snapshot.signature;
+    lastSnapshotRef.current = snapshot;
+    if (typeof onStatePersist !== 'function') return;
     try {
       onStatePersist({
-        ...data,
-        signature: inputSignature,
+        ...snapshot,
         timestamp: Date.now()
       });
     } catch (error) {
@@ -972,6 +1082,15 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     if (!mapReady || !mapRef.current) return;
     // 如果没有地点，不显示（但会由目的地定位useEffect处理）
     if (!places || !Array.isArray(places) || places.length === 0) return;
+    if (
+      persistedState &&
+      persistedState.signature &&
+      restoredSignatureRef.current === persistedState.signature &&
+      persistedState.signature === inputSignature
+    ) {
+      console.log('地图已从快照恢复，跳过重新绘制');
+      return;
+    }
 
     // 简易并发控制的 map（promise 并发限制）
     const pMap = async (iterable, mapper, { concurrency = 4, onProgress } = {}) => {
@@ -1136,6 +1255,16 @@ export default function MapView({ destination, places = [], routeSequence = [], 
 
         // 计算每个地点属于哪一天（用于不同颜色/图案），基于复合键避免同名冲突
         const keyToDayMap = computePlaceDayIndexMap(placeCoords, routeSequence);
+        const snapshotPlaces = placeCoords
+          .filter((coord) => coord && typeof coord.lng === 'number' && typeof coord.lat === 'number')
+          .map((coord) => ({
+            name: coord.name || '',
+            address: coord.address || '',
+            lng: coord.lng,
+            lat: coord.lat,
+            dayIndex: keyToDayMap.get(compositeKey(coord)) ?? null
+          }));
+        const snapshotPolylines = [];
 
         // 添加标记（按天显示不同颜色或图案）
         setProgress((prev) => ({ active: true, percent: Math.max(prev.percent, 45), message: '开始绘制标记…' }));
@@ -1280,6 +1409,14 @@ export default function MapView({ destination, places = [], routeSequence = [], 
             try {
               const routePoints = await planRoute(dayCoords, routeStrategy);
               console.log(`第${dayIndex + 1}天路线规划成功，路线点数量:`, routePoints.length);
+              snapshotPolylines.push({
+                path: routePoints.map((p) => ({ lng: p.lng, lat: p.lat })),
+                strokeColor: getRouteColor(dayIndex),
+                strokeWeight: 3,
+                strokeOpacity: 0.8,
+                strokeStyle: 'solid',
+                dayIndex
+              });
               
               if (effectiveProvider === 'baidu') {
                 const points = routePoints.map(p => new window.BMapGL.Point(p.lng, p.lat));
@@ -1313,6 +1450,15 @@ export default function MapView({ destination, places = [], routeSequence = [], 
             } catch (error) {
               console.warn(`规划第${dayIndex + 1}天路线失败:`, error);
               // 如果路线规划失败，直接连线
+              const fallbackPath = dayCoords.map(c => ({ lng: c.lng, lat: c.lat }));
+              snapshotPolylines.push({
+                path: fallbackPath,
+                strokeColor: getRouteColor(dayIndex),
+                strokeWeight: 2,
+                strokeOpacity: 0.6,
+                strokeStyle: 'solid',
+                dayIndex
+              });
               if (effectiveProvider === 'baidu') {
                 const points = dayCoords.map(c => new window.BMapGL.Point(c.lng, c.lat));
                 const polyline = new window.BMapGL.Polyline(points, {
@@ -1353,6 +1499,14 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               placeCoords.map(p => ({ lng: p.lng, lat: p.lat })),
               routeStrategy
             );
+            snapshotPolylines.push({
+              path: routePoints.map((p) => ({ lng: p.lng, lat: p.lat })),
+              strokeColor: '#3388ff',
+              strokeWeight: 3,
+              strokeOpacity: 0.8,
+              strokeStyle: 'solid',
+              dayIndex: null
+            });
             
             if (effectiveProvider === 'baidu') {
               const points = routePoints.map(p => new window.BMapGL.Point(p.lng, p.lat));
@@ -1386,6 +1540,15 @@ export default function MapView({ destination, places = [], routeSequence = [], 
             console.warn('规划路线失败:', error);
             // 回退：直接连线所有地点
             const effectiveProviderFallback = getEffectiveProvider(placeCoords);
+            const fallbackPath = placeCoords.map(p => ({ lng: p.lng, lat: p.lat }));
+            snapshotPolylines.push({
+              path: fallbackPath,
+              strokeColor: '#3388ff',
+              strokeWeight: 2,
+              strokeOpacity: 0.6,
+              strokeStyle: 'solid',
+              dayIndex: null
+            });
             if (effectiveProviderFallback === 'baidu') {
               const points = placeCoords.map(p => new window.BMapGL.Point(p.lng, p.lat));
               const polyline = new window.BMapGL.Polyline(points, {
@@ -1425,6 +1588,12 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         } else {
           console.warn('没有有效的地点坐标，无法调整地图视野');
         }
+        persistSnapshot({
+          provider: effectiveProvider,
+          places: snapshotPlaces,
+          polylines: snapshotPolylines,
+          viewportCoords: snapshotPlaces.map(({ lng, lat }) => ({ lng, lat }))
+        });
         setProgress({ active: false, percent: 100, message: '' });
       } catch (error) {
         console.error('显示地点和路线失败:', error);
@@ -1433,7 +1602,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     };
 
     displayPlacesAndRoute();
-  }, [places, routeSequence, routeStrategy, mapReady, cfg.map.key, cfg.map.provider]);
+  }, [places, routeSequence, routeStrategy, mapReady, cfg.map.key, cfg.map.provider, persistedState, inputSignature]);
 
   // 调整地图视野
   const adjustMapView = (coords) => {

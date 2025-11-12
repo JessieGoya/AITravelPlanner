@@ -10,10 +10,8 @@ function getBackendUrl() {
   if (import.meta.env.DEV) {
     return 'http://localhost:8080';
   }
-  // 生产环境：如果前后端在同一域名下，使用相对路径；否则需要配置 VITE_BACKEND_URL
-  // 默认假设后端在相同域名的 8080 端口
-  const host = window.location.hostname;
-  return `${window.location.protocol}//${host}:8080`;
+  // 生产环境默认与前端同源
+  return window.location.origin;
 }
 
 export async function generatePlan(prompt) {

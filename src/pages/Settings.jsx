@@ -202,8 +202,8 @@ export default function Settings() {
             <div className="col">
               <label style={{ fontSize: '14px', fontWeight: 500 }}>地图服务商</label>
               <select className="input" value={mapProvider} onChange={(e) => setMapProvider(e.target.value)}>
-                <option value="amap">高德地图（中国境内推荐）</option>
-                <option value="baidu">百度地图（中国境内推荐）</option>
+                {/* <option value="amap">高德地图（中国境内推荐）</option> */}
+                {/* <option value="baidu">百度地图（中国境内推荐）</option> */}
                 <option value="osm">OpenStreetMap（全球覆盖，海外推荐）</option>
               </select>
               <div className="muted" style={{ fontSize: '12px', marginTop: 4 }}>

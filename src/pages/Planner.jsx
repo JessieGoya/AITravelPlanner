@@ -12,6 +12,7 @@ import { parsePlacesFromPlan, parseRouteSequence } from '../services/routeParser
 const PREFERENCES = ['美食', '自然', '历史', '艺术', '亲子', '动漫', '购物'];
 const USER_KEY = 'demo_user_v1';
 const DRAFT_STORAGE_KEY = 'planner_draft_state_v1';
+const MAP_SNAPSHOT_STORAGE_KEY = 'planner_map_snapshot_v1';
 
 export default function Planner() {
   const [destination, setDestination] = useState('');
@@ -33,10 +34,38 @@ export default function Planner() {
   const [routeSequence, setRouteSequence] = useState([]);
   const [routeStrategy, setRouteStrategy] = useState('driving');
   const [parsingPlaces, setParsingPlaces] = useState(false);
-  const [mapSnapshot, setMapSnapshot] = useState(null);
+  const [mapSnapshot, setMapSnapshot] = useState(() => {
+    if (typeof window === 'undefined' || !window.sessionStorage) return null;
+    try {
+      const raw = window.sessionStorage.getItem(MAP_SNAPSHOT_STORAGE_KEY);
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    } catch (error) {
+      console.warn('读取地图快照失败:', error);
+    }
+    return null;
+  });
   const isInitializedRef = useRef(false);
 
   const cfg = useMemo(getRuntimeConfig, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    if (!mapSnapshot) {
+      try {
+        window.sessionStorage.removeItem(MAP_SNAPSHOT_STORAGE_KEY);
+      } catch (error) {
+        console.warn('移除地图快照失败:', error);
+      }
+      return;
+    }
+    try {
+      window.sessionStorage.setItem(MAP_SNAPSHOT_STORAGE_KEY, JSON.stringify(mapSnapshot));
+    } catch (error) {
+      console.warn('保存地图快照到会话存储失败:', error);
+    }
+  }, [mapSnapshot]);
 
   // 保存草稿状态到 localStorage
   const saveDraft = () => {
@@ -631,10 +660,7 @@ export default function Planner() {
             persistedState={mapSnapshot}
             onStatePersist={(snapshot) => {
               if (!snapshot) return;
-              // 避免重复写入相同快照
-              if (!mapSnapshot || mapSnapshot.signature !== snapshot.signature) {
-                setMapSnapshot(snapshot);
-              }
+              setMapSnapshot(snapshot);
             }}
           />
           {!cfg.map.key && (
