@@ -541,6 +541,17 @@ async function planRouteAmap(points, strategy, key) {
 
     // 处理途经点：如果有途经点，需要分段规划
     const planRouteSegment = (start, end, waypointsList) => {
+      // 统一格式转换函数：将数组格式 [lng, lat] 转换为对象格式 {lng, lat}
+      const normalizePoint = (p) => {
+        if (Array.isArray(p)) {
+          return { lng: p[0], lat: p[1] };
+        }
+        if (p && typeof p.lng === 'number' && typeof p.lat === 'number') {
+          return { lng: p.lng, lat: p.lat };
+        }
+        return null;
+      };
+      
       return new Promise((resolveSegment) => {
         if (waypointsList.length === 0) {
           // 没有途经点，直接规划
@@ -548,10 +559,21 @@ async function planRouteAmap(points, strategy, key) {
             if (status === 'complete' && result.routes && result.routes.length > 0) {
               const route = result.routes[0];
               const routePoints = extractRoutePoints(route);
-              resolveSegment(routePoints.length > 0 ? routePoints : [start, end]);
+              if (routePoints.length > 0) {
+                resolveSegment(routePoints);
+              } else {
+                // 规划失败，直接连线，统一为对象格式
+                resolveSegment([
+                  normalizePoint(start),
+                  normalizePoint(end)
+                ].filter(Boolean));
+              }
             } else {
-              // 规划失败，直接连线
-              resolveSegment([start, end]);
+              // 规划失败，直接连线，统一为对象格式
+              resolveSegment([
+                normalizePoint(start),
+                normalizePoint(end)
+              ].filter(Boolean));
             }
           });
         } else {
@@ -566,14 +588,24 @@ async function planRouteAmap(points, strategy, key) {
                 if (status === 'complete' && result.routes && result.routes.length > 0) {
                   const route = result.routes[0];
                   const routePoints = extractRoutePoints(route);
-                  allSegments.push(routePoints.length > 0 ? routePoints : [currentStart, end]);
+                  if (routePoints.length > 0) {
+                    allSegments.push(routePoints);
+                  } else {
+                    allSegments.push([
+                      normalizePoint(currentStart),
+                      normalizePoint(end)
+                    ].filter(Boolean));
+                  }
                 } else {
-                  allSegments.push([currentStart, end]);
+                  allSegments.push([
+                    normalizePoint(currentStart),
+                    normalizePoint(end)
+                  ].filter(Boolean));
                 }
                 // 合并所有段
                 const merged = [];
                 allSegments.forEach((segment, i) => {
-                  if (i > 0) {
+                  if (i > 0 && segment.length > 0) {
                     // 去除重复的起点（与上一段的终点相同）
                     merged.push(...segment.slice(1));
                   } else {
@@ -589,9 +621,19 @@ async function planRouteAmap(points, strategy, key) {
                 if (status === 'complete' && result.routes && result.routes.length > 0) {
                   const route = result.routes[0];
                   const routePoints = extractRoutePoints(route);
-                  allSegments.push(routePoints.length > 0 ? routePoints : [currentStart, waypoint]);
+                  if (routePoints.length > 0) {
+                    allSegments.push(routePoints);
+                  } else {
+                    allSegments.push([
+                      normalizePoint(currentStart),
+                      normalizePoint(waypoint)
+                    ].filter(Boolean));
+                  }
                 } else {
-                  allSegments.push([currentStart, waypoint]);
+                  allSegments.push([
+                    normalizePoint(currentStart),
+                    normalizePoint(waypoint)
+                  ].filter(Boolean));
                 }
                 currentStart = waypoint;
                 planNext(index + 1);

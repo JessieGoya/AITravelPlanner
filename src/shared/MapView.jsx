@@ -333,15 +333,18 @@ export default function MapView({ destination, places = [], routeSequence = [], 
 
   // 规范化名称：去空格、转小写、去常见标点与括号内容、去常见后缀
   const normalizeName = (name) => {
-    const suffixes = ['景点', '景区', '公园', '博物馆', '纪念馆', '寺', '庙', '塔', '广场', '大街', '路', '酒店', '餐厅', '饭店'];
+    if (!name || typeof name !== 'string') return '';
+    const suffixes = ['景点', '景区', '公园', '博物馆', '纪念馆', '寺', '庙', '塔', '广场', '大街', '路', '酒店', '餐厅', '饭店', '店', '馆', '院', '楼', '中心'];
     const strip = (s) => suffixes.reduce((acc, suf) => acc.replace(new RegExp(suf, 'g'), ''), s);
-    return strip(
-      (name || '')
-        .toLowerCase()
-        .replace(/\(.*?\)|（.*?）/g, '') // 去括号内容
-        .replace(/[·\.\-_,，。/\\\s]+/g, '') // 去标点与空白
-        .trim()
-    );
+    let normalized = (name || '')
+      .toLowerCase()
+      .replace(/\(.*?\)|（.*?）/g, '') // 去括号内容
+      .replace(/[·\.\-_,，。；;：:！!？?/\\\s]+/g, '') // 去标点与空白
+      .trim();
+    // 去除常见前缀
+    normalized = normalized.replace(/^(前往|打卡|游览|参观|途经|集合于|抵达|到达|出发至|出发到|入住于|入住|退房后前往)\s*/, '');
+    normalized = normalized.replace(/\s*(集合|结束|返回|入住|用餐|自由活动|休息|酒店|青旅|旅馆|宾馆)$/, '');
+    return strip(normalized);
   };
 
   // 为地点生成复合键（用于唯一标识），避免名称冲突
@@ -357,19 +360,53 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     const na = (a || '').trim();
     const nb = (b || '').trim();
     if (!na || !nb) return false;
+    // 完全相等
     if (na === nb) return true;
+    // 包含关系（更宽松）
     if (na.includes(nb) || nb.includes(na)) return true;
+    // 规范化后匹配
     const sa = normalizeName(na);
     const sb = normalizeName(nb);
-    return !!sa && !!sb && (sa === sb || sa.includes(sb) || sb.includes(sa));
+    if (sa && sb) {
+      if (sa === sb) return true;
+      if (sa.includes(sb) || sb.includes(sa)) return true;
+      // 如果规范化后的名称长度都大于2，且其中一个包含另一个的主要部分，也认为匹配
+      if (sa.length > 2 && sb.length > 2) {
+        const minLen = Math.min(sa.length, sb.length);
+        const maxLen = Math.max(sa.length, sb.length);
+        // 如果较短名称的长度至少是较长名称的60%，且较长名称包含较短名称，认为匹配
+        if (minLen / maxLen >= 0.6 && (sa.length > sb.length ? sa.includes(sb) : sb.includes(sa))) {
+          return true;
+        }
+      }
+    }
+    return false;
   };
 
   // 根据 routeSequence 计算每个地点的 dayIndex
   // 返回 Map<复合键 name|lng|lat, dayIndex>，避免同名地点跨天混淆
   const computePlaceDayIndexMap = (allPlaces, sequence) => {
     const keyToDay = new Map();
-    if (!Array.isArray(allPlaces) || !Array.isArray(sequence) || sequence.length === 0) return keyToDay;
+    if (!Array.isArray(allPlaces)) return keyToDay;
 
+    // 第一步：优先使用地点已有的 day 属性（如果 parsePlacesFromPlan 已经提取了天数信息）
+    for (let i = 0; i < allPlaces.length; i++) {
+      const p = allPlaces[i];
+      if (p && typeof p.day === 'number' && p.day > 0) {
+        // day 是 1-based，转换为 0-based 的 dayIndex
+        const dayIndex = p.day - 1;
+        const key = compositeKey(p);
+        keyToDay.set(key, dayIndex);
+        console.log(`地点 ${p.name} 使用已有的 day 属性: ${p.day} -> dayIndex ${dayIndex}`);
+      }
+    }
+
+    // 第二步：如果没有 routeSequence，直接返回（已基于 day 属性的映射）
+    if (!Array.isArray(sequence) || sequence.length === 0) {
+      return keyToDay;
+    }
+
+    // 第三步：基于 routeSequence 进行名称匹配（补充未匹配的地点）
     // 为每个规范化名称建立候选索引列表（可能有重复同名）
     const nameToIndices = new Map();
     for (let i = 0; i < allPlaces.length; i++) {
@@ -381,6 +418,13 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     }
     // 跟踪已分配到某天的具体地点索引，避免同一实体跨天复用
     const assignedIndex = new Set();
+    // 已经通过 day 属性分配的地点，不再参与 routeSequence 匹配
+    for (let i = 0; i < allPlaces.length; i++) {
+      const p = allPlaces[i];
+      if (p && typeof p.day === 'number' && p.day > 0) {
+        assignedIndex.add(i);
+      }
+    }
 
     // 按天按顺序，为每个目标名称选择一个尚未分配的最佳候选
     for (let dayIndex = 0; dayIndex < sequence.length; dayIndex++) {
@@ -388,18 +432,38 @@ export default function MapView({ destination, places = [], routeSequence = [], 
       for (const targetName of dayPlaces) {
         const normTarget = normalizeName(targetName || '');
         if (!normTarget) continue;
-        const candidates = (nameToIndices.get(normTarget) || [])
+        
+        // 首先尝试精确匹配（规范化后的名称）
+        let candidates = (nameToIndices.get(normTarget) || [])
           .filter(idx => !assignedIndex.has(idx));
+        
+        // 如果精确匹配失败，尝试宽松匹配
         if (candidates.length === 0) {
-          // 回退：在所有地点里做宽松匹配，找一个未分配的
-          const idx = allPlaces.findIndex((p, i) => !assignedIndex.has(i) && isNameMatch(p?.name, targetName));
+          // 在所有地点里做宽松匹配，找一个未分配的
+          const idx = allPlaces.findIndex((p, i) => {
+            if (assignedIndex.has(i)) return false;
+            // 尝试多种匹配方式
+            const pName = (p?.name || '').trim();
+            const tName = (targetName || '').trim();
+            // 完全相等
+            if (pName === tName) return true;
+            // 包含关系
+            if (pName.includes(tName) || tName.includes(pName)) return true;
+            // 规范化后匹配
+            return isNameMatch(pName, tName);
+          });
           if (idx >= 0) {
             assignedIndex.add(idx);
             const key = compositeKey(allPlaces[idx]);
-            keyToDay.set(key, dayIndex);
+            // 如果该地点还没有 dayIndex，才设置
+            if (!keyToDay.has(key)) {
+              keyToDay.set(key, dayIndex);
+              console.log(`地点 ${allPlaces[idx].name} 通过宽松匹配分配到第 ${dayIndex + 1} 天`);
+            }
           }
           continue;
         }
+        
         // 优先：完全相等的名称
         let chosen = candidates.find(i => (allPlaces[i]?.name || '').trim() === (targetName || '').trim());
         if (chosen == null) {
@@ -409,9 +473,15 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         if (chosen == null) chosen = candidates[0];
         assignedIndex.add(chosen);
         const key = compositeKey(allPlaces[chosen]);
-        keyToDay.set(key, dayIndex);
+        // 如果该地点还没有 dayIndex，才设置（避免覆盖已有的 day 属性）
+        if (!keyToDay.has(key)) {
+          keyToDay.set(key, dayIndex);
+          console.log(`地点 ${allPlaces[chosen].name} 通过 routeSequence 匹配分配到第 ${dayIndex + 1} 天`);
+        }
       }
     }
+    
+    console.log(`地点天数映射完成，共 ${keyToDay.size} 个地点有天数信息，总地点数 ${allPlaces.length}`);
     return keyToDay;
   };
 
@@ -1257,21 +1327,33 @@ export default function MapView({ destination, places = [], routeSequence = [], 
         const keyToDayMap = computePlaceDayIndexMap(placeCoords, routeSequence);
         const snapshotPlaces = placeCoords
           .filter((coord) => coord && typeof coord.lng === 'number' && typeof coord.lat === 'number')
-          .map((coord) => ({
-            name: coord.name || '',
-            address: coord.address || '',
-            lng: coord.lng,
-            lat: coord.lat,
-            dayIndex: keyToDayMap.get(compositeKey(coord)) ?? null
-          }));
+          .map((coord) => {
+            const key = compositeKey(coord);
+            let dayIndex = keyToDayMap.get(key);
+            // 如果 keyToDayMap 中没有，但地点本身有 day 属性，使用它
+            if (dayIndex === undefined && coord.day && typeof coord.day === 'number' && coord.day > 0) {
+              dayIndex = coord.day - 1; // day 是 1-based，转换为 0-based
+            }
+            return {
+              name: coord.name || '',
+              address: coord.address || '',
+              lng: coord.lng,
+              lat: coord.lat,
+              dayIndex: dayIndex ?? null
+            };
+          });
         const snapshotPolylines = [];
 
         // 添加标记（按天显示不同颜色或图案）
         setProgress((prev) => ({ active: true, percent: Math.max(prev.percent, 45), message: '开始绘制标记…' }));
         const makeMarker = (coord) => {
           const key = compositeKey(coord);
-          const dayIndex = keyToDayMap.get(key);
-          const markerStyle = dayIndex !== undefined ? getMarkerStyle(dayIndex) : { color: '#999999', pattern: 'solid' };
+          let dayIndex = keyToDayMap.get(key);
+          // 如果 keyToDayMap 中没有，但地点本身有 day 属性，使用它
+          if (dayIndex === undefined && coord.day && typeof coord.day === 'number' && coord.day > 0) {
+            dayIndex = coord.day - 1; // day 是 1-based，转换为 0-based
+          }
+          const markerStyle = dayIndex !== undefined && dayIndex !== null ? getMarkerStyle(dayIndex) : { color: '#999999', pattern: 'solid' };
           const iconUrl = buildSvgDataUrl(markerStyle.color, markerStyle.pattern);
 
           if (effectiveProvider === 'baidu') {
@@ -1409,8 +1491,16 @@ export default function MapView({ destination, places = [], routeSequence = [], 
             try {
               const routePoints = await planRoute(dayCoords, routeStrategy);
               console.log(`第${dayIndex + 1}天路线规划成功，路线点数量:`, routePoints.length);
+              
+              // 规范化路线点，确保格式正确
+              const normalizedRoutePoints = ensureArrayLngLat(routePoints);
+              if (normalizedRoutePoints.length < 2) {
+                console.warn(`第${dayIndex + 1}天路线点数量不足，使用fallback连线`);
+                throw new Error('路线点数量不足');
+              }
+              
               snapshotPolylines.push({
-                path: routePoints.map((p) => ({ lng: p.lng, lat: p.lat })),
+                path: normalizedRoutePoints.map((p) => ({ lng: p.lng, lat: p.lat })),
                 strokeColor: getRouteColor(dayIndex),
                 strokeWeight: 3,
                 strokeOpacity: 0.8,
@@ -1419,7 +1509,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               });
               
               if (effectiveProvider === 'baidu') {
-                const points = routePoints.map(p => new window.BMapGL.Point(p.lng, p.lat));
+                const points = normalizedRoutePoints.map(p => new window.BMapGL.Point(p.lng, p.lat));
                 const polyline = new window.BMapGL.Polyline(points, {
                   strokeColor: getRouteColor(dayIndex),
                   strokeWeight: 3,
@@ -1428,7 +1518,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
                 mapRef.current.addOverlay(polyline);
                 polylinesRef.current.push(polyline);
               } else if (effectiveProvider === 'osm' && window.L) {
-                const path = routePoints.map(p => [p.lat, p.lng]);
+                const path = normalizedRoutePoints.map(p => [p.lat, p.lng]);
                 const polyline = window.L.polyline(path, {
                   color: getRouteColor(dayIndex),
                   weight: 3,
@@ -1436,7 +1526,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
                 }).addTo(mapRef.current);
                 polylinesRef.current.push(polyline);
               } else {
-                const path = routePoints.map(p => [p.lng, p.lat]);
+                const path = normalizedRoutePoints.map(p => [p.lng, p.lat]);
                 const polyline = new window.AMap.Polyline({
                   path: path,
                   strokeColor: getRouteColor(dayIndex),
@@ -1499,8 +1589,16 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               placeCoords.map(p => ({ lng: p.lng, lat: p.lat })),
               routeStrategy
             );
+            
+            // 规范化路线点，确保格式正确
+            const normalizedRoutePoints = ensureArrayLngLat(routePoints);
+            if (normalizedRoutePoints.length < 2) {
+              console.warn('路线点数量不足，使用fallback连线');
+              throw new Error('路线点数量不足');
+            }
+            
             snapshotPolylines.push({
-              path: routePoints.map((p) => ({ lng: p.lng, lat: p.lat })),
+              path: normalizedRoutePoints.map((p) => ({ lng: p.lng, lat: p.lat })),
               strokeColor: '#3388ff',
               strokeWeight: 3,
               strokeOpacity: 0.8,
@@ -1509,7 +1607,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
             });
             
             if (effectiveProvider === 'baidu') {
-              const points = routePoints.map(p => new window.BMapGL.Point(p.lng, p.lat));
+              const points = normalizedRoutePoints.map(p => new window.BMapGL.Point(p.lng, p.lat));
               const polyline = new window.BMapGL.Polyline(points, {
                 strokeColor: '#3388ff',
                 strokeWeight: 3,
@@ -1518,7 +1616,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               mapRef.current.addOverlay(polyline);
               polylinesRef.current.push(polyline);
             } else if (effectiveProvider === 'osm' && window.L) {
-              const path = routePoints.map(p => [p.lat, p.lng]);
+              const path = normalizedRoutePoints.map(p => [p.lat, p.lng]);
               const polyline = window.L.polyline(path, {
                 color: '#3388ff',
                 weight: 3,
@@ -1526,7 +1624,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               }).addTo(mapRef.current);
               polylinesRef.current.push(polyline);
             } else {
-              const path = routePoints.map(p => [p.lng, p.lat]);
+              const path = normalizedRoutePoints.map(p => [p.lng, p.lat]);
               const polyline = new window.AMap.Polyline({
                 path: path,
                 strokeColor: '#3388ff',
