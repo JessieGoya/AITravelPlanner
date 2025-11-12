@@ -1,0 +1,19 @@
+{
+  "llm": {
+    "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "apiKey": "sk-f6311402ec014de182f09486ea64ed98",
+    "model": "qwen-plus"
+  },
+  "map": {
+    "provider": "osm",
+    "key": ""
+  },
+  "budget": {
+    "currency": "CNY"
+  },
+  "theme": "dark",
+  "supabase": {
+    "url": "https://ilatjisgmmvhvehpicff.supabase.co",
+    "anonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlsYXRqaXNnbW12aHZlaHBpY2ZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MzAyNjAsImV4cCI6MjA3ODUwNjI2MH0.HgUijmkJ8oi7L53bt4I3MEtQNFu4kux36QkuMA3-VBc"
+  }
+}

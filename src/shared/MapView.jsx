@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getRuntimeConfig } from '../services/config';
 import { geocode, planRoute } from '../services/geocode';
 import { getAdministrativeBoundaryGeoJSON } from '../services/boundary';
@@ -11,14 +11,41 @@ import { getAdministrativeBoundaryGeoJSON } from '../services/boundary';
  * @param {Array<Array<string>>} props.routeSequence - 路线序列（按天数分组的地点名称）
  * @param {string} props.routeStrategy - 路线策略（driving/walking/transit）
  */
-export default function MapView({ destination, places = [], routeSequence = [], routeStrategy = 'driving' }) {
+export default function MapView({ destination, places = [], routeSequence = [], routeStrategy = 'driving', persistedState = null, onStatePersist }) {
   const ref = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
   const polylinesRef = useRef([]);
+  const restoredSignatureRef = useRef(null);
   const [progress, setProgress] = useState({ active: false, percent: 0, message: '' });
   const [mapReady, setMapReady] = useState(false);
   const cfg = getRuntimeConfig();
+
+  const inputSignature = useMemo(() => {
+    const normalizedPlaces = Array.isArray(places)
+      ? places.map((p) => ({
+          name: (p?.name || '').trim(),
+          address: (p?.address || '').trim(),
+          day: p?.day ?? null,
+          time: p?.time ?? null
+        }))
+      : [];
+    const normalizedRouteSequence = Array.isArray(routeSequence)
+      ? routeSequence.map((day) =>
+          Array.isArray(day) ? day.map((name) => (name || '').trim()) : []
+        )
+      : [];
+    return JSON.stringify({
+      destination: (destination || '').trim(),
+      routeStrategy: routeStrategy || '',
+      places: normalizedPlaces,
+      routeSequence: normalizedRouteSequence
+    });
+  }, [destination, places, routeSequence, routeStrategy]);
+
+  useEffect(() => {
+    restoredSignatureRef.current = null;
+  }, [inputSignature]);
 
   // 获取路线颜色（根据天数）
   const getRouteColor = (dayIndex) => {
@@ -57,6 +84,169 @@ export default function MapView({ destination, places = [], routeSequence = [], 
     `.trim();
     return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
   };
+
+  const ensureArrayLngLat = (path) =>
+    Array.isArray(path)
+      ? path.filter((p) => p && typeof p.lng === 'number' && typeof p.lat === 'number')
+      : [];
+
+  const getMapProviderInUse = () => {
+    if (!mapRef.current) return cfg.map.provider;
+    try {
+      if (window.L && window.L.Map && mapRef.current instanceof window.L.Map) {
+        return 'osm';
+      }
+    } catch (error) {
+      console.warn('检测 Leaflet 地图实例失败:', error);
+    }
+    try {
+      if (window.AMap && window.AMap.Map && mapRef.current instanceof window.AMap.Map) {
+        return 'amap';
+      }
+    } catch (error) {
+      console.warn('检测高德地图实例失败:', error);
+    }
+    try {
+      if (window.BMapGL && window.BMapGL.Map && mapRef.current instanceof window.BMapGL.Map) {
+        return 'baidu';
+      }
+    } catch (error) {
+      console.warn('检测百度地图实例失败:', error);
+    }
+    return cfg.map.provider;
+  };
+
+  const addMarkerToMap = (coord, dayIndex, providerOverride) => {
+    if (!mapRef.current || !coord || typeof coord.lng !== 'number' || typeof coord.lat !== 'number') return null;
+    const provider = providerOverride || getMapProviderInUse();
+    const markerStyle =
+      dayIndex !== undefined && dayIndex !== null
+        ? getMarkerStyle(dayIndex)
+        : { color: '#999999', pattern: 'solid' };
+    const iconUrl = buildSvgDataUrl(markerStyle.color, markerStyle.pattern);
+
+    try {
+      if (provider === 'baidu' && window.BMapGL) {
+        const pt = new window.BMapGL.Point(coord.lng, coord.lat);
+        const size = new window.BMapGL.Size(28, 28);
+        const icon = new window.BMapGL.Icon(iconUrl, size, { imageSize: size });
+        const marker = new window.BMapGL.Marker(pt, { icon });
+        mapRef.current.addOverlay(marker);
+        if (coord.name || coord.address) {
+          const infoWindow = new window.BMapGL.InfoWindow(
+            `<div style="padding: 8px;"><strong>${coord.name || ''}</strong><br/>${coord.address || ''}</div>`,
+            { width: 200, height: 80 }
+          );
+          marker.addEventListener('click', () => {
+            mapRef.current.openInfoWindow(infoWindow, pt);
+          });
+        }
+        markersRef.current.push(marker);
+        return marker;
+      }
+
+      if (provider === 'osm' && window.L) {
+        const icon = window.L.icon({
+          iconUrl,
+          iconSize: [28, 28],
+          iconAnchor: [14, 26],
+          popupAnchor: [0, -24]
+        });
+        const marker = window.L.marker([coord.lat, coord.lng], { icon }).addTo(mapRef.current);
+        if (coord.name || coord.address) {
+          marker.bindPopup(`<div style="padding: 8px;"><strong>${coord.name || ''}</strong><br/>${coord.address || ''}</div>`);
+        }
+        markersRef.current.push(marker);
+        return marker;
+      }
+
+      if (provider === 'amap' && window.AMap) {
+        const markerEl = document.createElement('div');
+        markerEl.style.width = '24px';
+        markerEl.style.height = '24px';
+        markerEl.style.transform = 'translate(-50%, -100%)';
+        markerEl.style.backgroundImage = `url("${iconUrl}")`;
+        markerEl.style.backgroundSize = 'cover';
+        markerEl.style.pointerEvents = 'auto';
+        const marker = new window.AMap.Marker({
+          position: [coord.lng, coord.lat],
+          title: coord.name || '',
+          content: markerEl
+        });
+        if (coord.name || coord.address) {
+          marker.on('click', () => {
+            const infoWindow = new window.AMap.InfoWindow({
+              content: `<div style="padding: 8px;"><strong>${coord.name || ''}</strong><br/>${coord.address || ''}</div>`
+            });
+            infoWindow.open(mapRef.current, [coord.lng, coord.lat]);
+          });
+        }
+        mapRef.current.add(marker);
+        markersRef.current.push(marker);
+        return marker;
+      }
+    } catch (error) {
+      console.warn('添加标记失败:', error);
+    }
+
+    return null;
+  };
+
+  const addPolylineToMap = (path, options = {}, providerOverride) => {
+    if (!mapRef.current) return null;
+    const coords = ensureArrayLngLat(path);
+    if (coords.length < 2) return null;
+    const { strokeColor, strokeWeight = 3, strokeOpacity = 0.8, strokeStyle = 'solid' } = options;
+    const provider = providerOverride || getMapProviderInUse();
+
+    try {
+      if (provider === 'baidu' && window.BMapGL) {
+        const points = coords.map((p) => new window.BMapGL.Point(p.lng, p.lat));
+        const polyline = new window.BMapGL.Polyline(points, {
+          strokeColor,
+          strokeWeight,
+          strokeOpacity,
+          strokeStyle
+        });
+        mapRef.current.addOverlay(polyline);
+        polylinesRef.current.push(polyline);
+        return polyline;
+      }
+
+      if (provider === 'osm' && window.L) {
+        const pathLatLng = coords.map((p) => [p.lat, p.lng]);
+        const polyline = window.L
+          .polyline(pathLatLng, {
+            color: strokeColor,
+            weight: strokeWeight,
+            opacity: strokeOpacity,
+            dashArray: strokeStyle === 'dashed' ? '6,6' : undefined
+          })
+          .addTo(mapRef.current);
+        polylinesRef.current.push(polyline);
+        return polyline;
+      }
+
+      if (provider === 'amap' && window.AMap) {
+        const pathLngLat = coords.map((p) => [p.lng, p.lat]);
+        const polyline = new window.AMap.Polyline({
+          path: pathLngLat,
+          strokeColor,
+          strokeWeight,
+          strokeOpacity,
+          strokeStyle
+        });
+        mapRef.current.add(polyline);
+        polylinesRef.current.push(polyline);
+        return polyline;
+      }
+    } catch (error) {
+      console.warn('添加折线失败:', error);
+    }
+
+    return null;
+  };
+
 
   // 规范化名称：去空格、转小写、去常见标点与括号内容、去常见后缀
   const normalizeName = (name) => {
@@ -247,36 +437,35 @@ export default function MapView({ destination, places = [], routeSequence = [], 
 
   // 根据地点坐标自动选择合适的地图提供商
   const getEffectiveProvider = (coords) => {
-    // 如果用户明确选择了 OSM，使用 OSM
-    if (cfg.map.provider === 'osm') {
+    const providerInUse = getMapProviderInUse();
+    if (providerInUse === 'osm') {
       return 'osm';
     }
-    
-    // 如果有坐标，检查是否都在中国境内
     if (coords && coords.length > 0) {
-      const allInChina = coords.every(c => c && c.lng && c.lat && isInChina(c.lng, c.lat));
-      // 如果有海外地点，自动切换到 OSM
-      if (!allInChina && cfg.map.provider !== 'osm') {
-        console.log('检测到海外地点，自动切换到 OpenStreetMap 以获得更好的显示效果');
-        return 'osm';
+      const allInChina = coords.every(
+        (c) => c && typeof c.lng === 'number' && typeof c.lat === 'number' && isInChina(c.lng, c.lat)
+      );
+      if (!allInChina && providerInUse !== 'osm') {
+        console.log('检测到海外地点，如需更好的显示效果，请考虑切换到 OpenStreetMap');
       }
     }
-    
-    return cfg.map.provider;
+    return providerInUse;
   };
 
   // 清理标记
   const clearMarkers = () => {
     if (!mapRef.current) return;
+    const provider = getMapProviderInUse();
     markersRef.current.forEach(marker => {
       try {
-        if (window.L && marker.remove) {
-          // Leaflet 标记
+        if (provider === 'osm' && window.L && typeof mapRef.current.removeLayer === 'function') {
           mapRef.current.removeLayer(marker);
-        } else if (cfg.map.provider === 'baidu') {
+        } else if (provider === 'baidu' && typeof mapRef.current.removeOverlay === 'function') {
           mapRef.current.removeOverlay(marker);
-        } else {
+        } else if (provider === 'amap' && typeof mapRef.current.remove === 'function') {
           mapRef.current.remove(marker);
+        } else if (marker && typeof marker.remove === 'function') {
+          marker.remove();
         }
       } catch (e) {
         // 忽略清理错误
@@ -288,21 +477,83 @@ export default function MapView({ destination, places = [], routeSequence = [], 
   // 清理路线
   const clearPolylines = () => {
     if (!mapRef.current) return;
+    const provider = getMapProviderInUse();
     polylinesRef.current.forEach(polyline => {
       try {
-        if (window.L && polyline.remove) {
-          // Leaflet 路线
+        if (provider === 'osm' && window.L && typeof mapRef.current.removeLayer === 'function') {
           mapRef.current.removeLayer(polyline);
-        } else if (cfg.map.provider === 'baidu') {
+        } else if (provider === 'baidu' && typeof mapRef.current.removeOverlay === 'function') {
           mapRef.current.removeOverlay(polyline);
-        } else {
+        } else if (provider === 'amap' && typeof mapRef.current.remove === 'function') {
           mapRef.current.remove(polyline);
+        } else if (polyline && typeof polyline.remove === 'function') {
+          polyline.remove();
         }
       } catch (e) {
         // 忽略清理错误
       }
     });
     polylinesRef.current = [];
+  };
+
+  const restoreSnapshot = (snapshot) => {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    const providerInUse = getMapProviderInUse();
+    if (snapshot.provider && snapshot.provider !== providerInUse) {
+      console.warn('地图快照的提供商与当前地图不匹配，跳过恢复', {
+        snapshotProvider: snapshot.provider,
+        providerInUse
+      });
+      return false;
+    }
+    try {
+      clearMarkers();
+      clearPolylines();
+      const provider = providerInUse;
+      const snapshotPlaces = Array.isArray(snapshot.places) ? snapshot.places : [];
+      snapshotPlaces.forEach((place) => {
+        addMarkerToMap(place, place.dayIndex ?? null, provider);
+      });
+      const snapshotPolylines = Array.isArray(snapshot.polylines) ? snapshot.polylines : [];
+      snapshotPolylines.forEach((polyline) => {
+        addPolylineToMap(
+          polyline.path,
+          {
+            strokeColor:
+              polyline.strokeColor ??
+              (polyline.dayIndex != null ? getRouteColor(polyline.dayIndex) : '#3388ff'),
+            strokeWeight: polyline.strokeWeight ?? 3,
+            strokeOpacity: polyline.strokeOpacity ?? 0.8,
+            strokeStyle: polyline.strokeStyle ?? 'solid'
+          },
+          provider
+        );
+      });
+      const viewportCoords = Array.isArray(snapshot.viewportCoords) ? snapshot.viewportCoords : [];
+      if (viewportCoords.length > 0) {
+        adjustMapView(viewportCoords);
+      } else if (snapshotPlaces.length > 0) {
+        adjustMapView(snapshotPlaces);
+      }
+      setProgress({ active: false, percent: 100, message: '' });
+      return true;
+    } catch (error) {
+      console.error('恢复地图状态失败:', error);
+      return false;
+    }
+  };
+
+  const persistSnapshot = (data) => {
+    if (typeof onStatePersist !== 'function' || !data) return;
+    try {
+      onStatePersist({
+        ...data,
+        signature: inputSignature,
+        timestamp: Date.now()
+      });
+    } catch (error) {
+      console.warn('保存地图状态快照失败:', error);
+    }
   };
 
   // 加载地图脚本和样式

@@ -3,6 +3,8 @@ import { getRuntimeConfig } from '../services/config';
 import VoiceInput from '../shared/VoiceInput';
 import MarkdownPreview from '../shared/MarkdownPreview';
 import { parseBudgetInput, analyzeBudget } from '../services/inputParser';
+import { saveBudgetRecord, getUserBudgetRecord } from '../services/plans';
+import { getSupabase } from '../services/supabase';
 
 const STORAGE_KEY = 'budget_entries_v1';
 const BUDGET_KEY = 'total_budget_v1';
@@ -19,12 +21,89 @@ export default function Budget() {
   const [parsing, setParsing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState('');
+  const [user, setUser] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('');
+  const [loadingFromCloud, setLoadingFromCloud] = useState(false);
+  const [cloudDataLoaded, setCloudDataLoaded] = useState(false);
+  const [lastSavedTime, setLastSavedTime] = useState(null);
 
+  // 从云端加载数据
+  const loadFromCloud = async () => {
+    if (!user) {
+      alert('请先登录');
+      return;
+    }
+
+    setLoadingFromCloud(true);
+    try {
+      const cloudData = await getUserBudgetRecord();
+      if (cloudData) {
+        setEntries(cloudData.entries || []);
+        setTotalBudget(cloudData.total_budget || 0);
+        if (cloudData.analysisResult) {
+          setAnalysisResult(cloudData.analysisResult);
+        }
+        setCloudDataLoaded(true);
+        if (cloudData.updated_at) {
+          setLastSavedTime(new Date(cloudData.updated_at).toLocaleString('zh-CN'));
+        }
+        alert('已从云端加载费用记录');
+      } else {
+        alert('云端暂无费用记录');
+      }
+    } catch (error) {
+      console.error('加载云端费用记录失败:', error);
+      alert('加载失败：' + error.message);
+    } finally {
+      setLoadingFromCloud(false);
+    }
+  };
+
+  // 检查用户登录状态并自动加载云端数据
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) setEntries(JSON.parse(raw));
-    const budgetRaw = localStorage.getItem(BUDGET_KEY);
-    if (budgetRaw) setTotalBudget(Number(budgetRaw) || 0);
+    const checkUser = async () => {
+      // 先检查是否应该使用云端存储
+      const { shouldUseCloudStorage } = await import('../services/supabase');
+      const useCloud = shouldUseCloudStorage();
+      
+      if (useCloud) {
+        try {
+          const supabase = getSupabase();
+          const session = supabase.auth.getSession();
+          if (session) {
+            setUser(session.user);
+            // 尝试从云端加载数据
+            try {
+              const cloudData = await getUserBudgetRecord();
+              if (cloudData) {
+                setEntries(cloudData.entries || []);
+                setTotalBudget(cloudData.total_budget || 0);
+                if (cloudData.analysisResult) {
+                  setAnalysisResult(cloudData.analysisResult);
+                }
+                setCloudDataLoaded(true);
+                if (cloudData.updated_at) {
+                  setLastSavedTime(new Date(cloudData.updated_at).toLocaleString('zh-CN'));
+                }
+                return; // 如果云端有数据，就不加载本地数据了
+              }
+            } catch (error) {
+              console.error('加载云端费用记录失败:', error);
+            }
+          }
+        } catch (error) {
+          console.error('加载云端数据失败:', error);
+        }
+      }
+      
+      // 回退到本地存储
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) setEntries(JSON.parse(raw));
+      const budgetRaw = localStorage.getItem(BUDGET_KEY);
+      if (budgetRaw) setTotalBudget(Number(budgetRaw) || 0);
+    };
+    checkUser();
   }, []);
 
   useEffect(() => {
@@ -107,6 +186,33 @@ export default function Budget() {
     }
   };
 
+  // 保存到云端
+  const handleSaveToCloud = async () => {
+    if (!user) {
+      alert('请先登录以保存到云端');
+      return;
+    }
+
+    setSaving(true);
+    setSaveStatus('');
+    try {
+      await saveBudgetRecord({
+        entries,
+        totalBudget,
+        analysisResult
+      });
+      setSaveStatus('保存成功！');
+      setCloudDataLoaded(true);
+      setLastSavedTime(new Date().toLocaleString('zh-CN'));
+      setTimeout(() => setSaveStatus(''), 3000);
+    } catch (error) {
+      setSaveStatus(`保存失败：${error.message}`);
+      setTimeout(() => setSaveStatus(''), 5000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const total = entries.reduce((s, e) => s + e.amount, 0);
   
   // 计算各类别支出统计
@@ -121,6 +227,39 @@ export default function Budget() {
 
   return (
     <div className="col" style={{ gap: 16 }}>
+      {/* 云端数据提示 */}
+      {user && (
+        <div className="card" style={{ 
+          background: cloudDataLoaded ? 'rgba(34, 197, 94, 0.1)' : 'rgba(59, 130, 246, 0.1)',
+          border: cloudDataLoaded ? '1px solid rgba(34, 197, 94, 0.3)' : '1px solid rgba(59, 130, 246, 0.3)'
+        }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                {cloudDataLoaded ? '✅ 已从云端加载费用记录' : '💾 费用记录可保存到云端'}
+              </div>
+              {lastSavedTime && (
+                <div className="muted" style={{ fontSize: '12px' }}>
+                  最后保存时间：{lastSavedTime}
+                </div>
+              )}
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              {user && (
+                <button 
+                  className="btn secondary" 
+                  onClick={loadFromCloud}
+                  disabled={loadingFromCloud}
+                  style={{ fontSize: '12px', padding: '6px 12px' }}
+                >
+                  {loadingFromCloud ? '加载中...' : '📥 从云端加载'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 总预算设置 */}
       <div className="card">
         <div className="section-title">总预算设置</div>
@@ -231,7 +370,7 @@ export default function Budget() {
       {/* AI 预算分析 */}
       <div className="card">
         <div className="section-title">AI 预算分析</div>
-        <div className="row" style={{ marginBottom: 12, alignItems: 'center', gap: 12 }}>
+        <div className="row" style={{ marginBottom: 12, alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <button 
             className="btn" 
             onClick={handleAnalyze} 
@@ -239,12 +378,34 @@ export default function Budget() {
           >
             {analyzing ? '分析中...' : '🤖 开始 AI 分析'}
           </button>
+          {user && (
+            <button 
+              className="btn secondary" 
+              onClick={handleSaveToCloud} 
+              disabled={saving || entries.length === 0}
+            >
+              {saving ? '保存中...' : '💾 保存到云端'}
+            </button>
+          )}
           {!cfg.llm.apiKey && (
             <span className="muted" style={{ fontSize: '12px' }}>
               需要在设置页面配置 LLM API Key 才能使用 AI 分析功能
             </span>
           )}
         </div>
+        {saveStatus && (
+          <div style={{
+            background: saveStatus.includes('成功') ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+            border: saveStatus.includes('成功') ? '1px solid rgba(34, 197, 94, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+            borderRadius: '8px',
+            padding: '10px 12px',
+            color: saveStatus.includes('成功') ? '#86efac' : '#fca5a5',
+            fontSize: '14px',
+            marginBottom: 12
+          }}>
+            {saveStatus}
+          </div>
+        )}
         {analysisResult && (
           <MarkdownPreview content={analysisResult} />
         )}

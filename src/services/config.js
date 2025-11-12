@@ -1,7 +1,7 @@
 const KEY = 'runtime_config_v1';
 
 const defaultConfig = {
-  llm: { baseUrl: '', apiKey: '', model: 'gpt-4o-mini' },
+  llm: { baseUrl: '', apiKey: '', model: 'qwen-plus' },
   map: { provider: 'amap', key: '' },
   budget: { currency: 'CNY' },
   theme: 'dark'

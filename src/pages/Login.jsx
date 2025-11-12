@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getSupabase } from '../services/supabase';
+import { saveUserProfile } from '../services/plans';
 
 const USER_KEY = 'demo_user_v1';
 
@@ -17,24 +18,32 @@ export default function Login() {
 
   useEffect(() => {
     const checkUser = () => {
-      const supabase = getSupabase();
-      const session = supabase.auth.getSession();
-      if (session) {
-        setUser(session.user);
-      } else {
-        // 回退到本地存储
-        const raw = localStorage.getItem(USER_KEY);
-        if (raw) {
-          try {
-            const u = JSON.parse(raw);
-            setUser(u);
-          } catch (e) {
-            console.error('Failed to parse user data', e);
-            setUser(null);
+      // 先检查本地 session，避免频繁触发 Supabase 初始化
+      const sessionStr = localStorage.getItem('supabase_session');
+      if (sessionStr) {
+        try {
+          const session = JSON.parse(sessionStr);
+          if (session && session.user && session.user.id) {
+            setUser(session.user);
+            return;
           }
-        } else {
+        } catch (e) {
+          console.error('Failed to parse session', e);
+        }
+      }
+      
+      // 回退到本地存储
+      const raw = localStorage.getItem(USER_KEY);
+      if (raw) {
+        try {
+          const u = JSON.parse(raw);
+          setUser(u);
+        } catch (e) {
+          console.error('Failed to parse user data', e);
           setUser(null);
         }
+      } else {
+        setUser(null);
       }
     };
     checkUser();
@@ -99,6 +108,9 @@ export default function Login() {
         loginTime: new Date().toISOString()
       };
 
+      // 保存是否为注册操作（在 setIsRegister(false) 之前）
+      const wasRegister = isRegister;
+
       // 同时保存到本地存储（兼容性）
       localStorage.setItem(USER_KEY, JSON.stringify(u));
       setUser(u);
@@ -110,6 +122,41 @@ export default function Login() {
       // 如果勾选了记住我，保存到 sessionStorage
       if (rememberMe) {
         sessionStorage.setItem(USER_KEY, JSON.stringify(u));
+      }
+
+      // 上传用户信息到云端（注册时立即上传，登录时检查并上传）
+      // 只有在 Supabase 配置有效时才尝试上传
+      try {
+        const { shouldUseCloudStorage } = await import('../services/supabase');
+        if (shouldUseCloudStorage()) {
+          // 确保使用最新的 supabase 实例（可能已经初始化）
+          const currentSupabase = getSupabase();
+          const session = currentSupabase.auth.getSession();
+          console.log('检查 session:', session ? { userId: session.user?.id, email: session.user?.email } : '无 session');
+          
+          if (session && session.user && session.user.id) {
+            // 如果是注册，立即上传；如果是登录，也尝试上传（saveUserProfile 会检查是否存在）
+            console.log('开始上传用户信息到云端...');
+            await saveUserProfile({
+              name: u.name || email.split('@')[0],
+              email: u.email || email.trim(),
+              loginTime: u.loginTime || new Date().toISOString()
+            });
+            console.log(wasRegister ? '注册信息已上传到云端' : '用户信息已同步到云端');
+          } else {
+            console.warn('Session 无效，跳过云端上传:', { session, hasUser: !!session?.user, hasUserId: !!session?.user?.id });
+          }
+        } else {
+          console.log('未配置 Supabase，跳过云端上传');
+        }
+      } catch (error) {
+        // 上传失败不影响登录流程，只记录错误
+        console.error('上传用户信息到云端失败:', error);
+        console.warn('错误详情:', error.message, error.stack);
+        // 如果是注册，给出提示但不阻止流程
+        if (wasRegister) {
+          console.warn('注册成功，但云端同步失败，可在个人资料页面手动同步');
+        }
       }
       
       // 登录成功后跳转到首页
@@ -160,7 +207,7 @@ export default function Login() {
             </button>
           </div>
           <div className="muted" style={{ fontSize: '13px', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-            提示：当前为演示模式，数据保存在浏览器本地。可替换为云端认证服务（Supabase/Firebase）。
+            提示：当前为演示模式，数据保存在浏览器本地。可替换为云端认证服务（Supabase）。
           </div>
         </div>
       </div>
@@ -168,6 +215,10 @@ export default function Login() {
   }
 
   return (
+    // 在登录界面显示“欢迎进入AI Travel Planner”
+    // <div className="section-title">
+    //     <h1>欢迎进入AI Travel Planner</h1>
+    //   </div>
     <div className="card" style={{ maxWidth: '500px', margin: '0 auto' }}>
       <div className="section-title">
         {isRegister ? '用户注册' : '用户登录'}

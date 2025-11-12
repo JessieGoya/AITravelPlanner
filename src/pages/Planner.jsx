@@ -1,16 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import VoiceInput from '../shared/VoiceInput';
 import MapView from '../shared/MapView';
 import MarkdownPreview from '../shared/MarkdownPreview';
 import { generatePlan } from '../services/llm';
 import { getRuntimeConfig } from '../services/config';
 import { parseTravelInput } from '../services/inputParser';
-import { savePlan, getUserPlans, getPlan, deletePlan } from '../services/plans';
+import { savePlan, getUserPlans, getPlan, deletePlan, getUserPreferences } from '../services/plans';
 import { getSupabase } from '../services/supabase';
 import { parsePlacesFromPlan, parseRouteSequence } from '../services/routeParser';
 
 const PREFERENCES = ['美食', '自然', '历史', '艺术', '亲子', '动漫', '购物'];
 const USER_KEY = 'demo_user_v1';
+const DRAFT_STORAGE_KEY = 'planner_draft_state_v1';
 
 export default function Planner() {
   const [destination, setDestination] = useState('');
@@ -32,8 +33,72 @@ export default function Planner() {
   const [routeSequence, setRouteSequence] = useState([]);
   const [routeStrategy, setRouteStrategy] = useState('driving');
   const [parsingPlaces, setParsingPlaces] = useState(false);
+  const [mapSnapshot, setMapSnapshot] = useState(null);
+  const isInitializedRef = useRef(false);
 
   const cfg = useMemo(getRuntimeConfig, []);
+
+  // 保存草稿状态到 localStorage
+  const saveDraft = () => {
+    const draft = {
+      destination,
+      days,
+      budget,
+      people,
+      prefs,
+      startDate,
+      inputText,
+      planOutput,
+      places,
+      routeSequence,
+      routeStrategy,
+      mapSnapshot,
+      currentPlanId,
+      timestamp: Date.now()
+    };
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch (error) {
+      console.error('保存草稿失败:', error);
+    }
+  };
+
+  // 从 localStorage 加载草稿状态
+  const loadDraft = () => {
+    try {
+      const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        // 只恢复非空的状态，避免覆盖用户可能正在输入的内容
+        if (draft.destination) setDestination(draft.destination);
+        if (draft.days) setDays(draft.days);
+        if (draft.budget) setBudget(draft.budget);
+        if (draft.people) setPeople(draft.people);
+        if (draft.prefs && draft.prefs.length > 0) setPrefs(draft.prefs);
+        if (draft.startDate) setStartDate(draft.startDate);
+        if (draft.inputText) setInputText(draft.inputText);
+        if (draft.planOutput) setPlanOutput(draft.planOutput);
+        if (draft.places && draft.places.length > 0) setPlaces(draft.places);
+        if (draft.routeSequence && draft.routeSequence.length > 0) setRouteSequence(draft.routeSequence);
+        if (draft.routeStrategy) setRouteStrategy(draft.routeStrategy);
+        if (draft.mapSnapshot) setMapSnapshot(draft.mapSnapshot);
+        if (draft.currentPlanId) setCurrentPlanId(draft.currentPlanId);
+        return true;
+      }
+    } catch (error) {
+      console.error('加载草稿失败:', error);
+    }
+    return false;
+  };
+
+  // 清除草稿状态
+  const clearDraft = () => {
+    try {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+    } catch (error) {
+      console.error('清除草稿失败:', error);
+    }
+  };
 
   // 加载已保存的行程
   const loadPlans = async () => {
@@ -48,14 +113,70 @@ export default function Planner() {
     }
   };
 
-  // 检查用户登录状态
+  // 检查用户登录状态并加载偏好设置，同时恢复草稿状态
   useEffect(() => {
     const checkUser = async () => {
-      const supabase = getSupabase();
-      const session = supabase.auth.getSession();
-      if (session) {
-        setUser(session.user);
-        await loadPlans();
+      // 先检查是否应该使用云端存储
+      const { shouldUseCloudStorage } = await import('../services/supabase');
+      const useCloud = shouldUseCloudStorage();
+      
+      if (useCloud) {
+        try {
+          const supabase = getSupabase();
+          const session = supabase.auth.getSession();
+          if (session) {
+            setUser(session.user);
+            await loadPlans();
+            
+            // 加载用户的偏好设置
+            try {
+              const userPrefs = await getUserPreferences();
+              if (userPrefs && userPrefs.preferences) {
+                // 将偏好设置扁平化为数组
+                let flattenedPrefs = [];
+                
+                if (Array.isArray(userPrefs.preferences)) {
+                  // 旧格式：直接是数组
+                  flattenedPrefs = userPrefs.preferences;
+                } else if (typeof userPrefs.preferences === 'object') {
+                  // 新格式：分类结构，需要扁平化
+                  const prefs = userPrefs.preferences;
+                  flattenedPrefs = [
+                    ...(prefs.destinationType || []),
+                    ...(prefs.travelTheme || []),
+                    ...(prefs.travelType || []),
+                    ...(prefs.interests || []),
+                    ...(prefs.travelPace || []),
+                    ...(prefs.custom || [])
+                  ];
+                }
+                
+                if (flattenedPrefs.length > 0) {
+                  // 合并云端偏好设置和当前偏好设置（去重）
+                  setPrefs((currentPrefs) => {
+                    const merged = [...new Set([...flattenedPrefs, ...currentPrefs])];
+                    return merged;
+                  });
+                }
+              }
+            } catch (error) {
+              console.error('加载用户偏好设置失败:', error);
+            }
+          }
+        } catch (error) {
+          console.error('加载云端数据失败:', error);
+          // 回退到本地存储
+          const raw = localStorage.getItem(USER_KEY);
+          if (raw) {
+            try {
+              setUser(JSON.parse(raw));
+            } catch (e) {
+              setUser(null);
+            }
+          } else {
+            setUser(null);
+          }
+        }
       } else {
         // 回退到本地存储
         const raw = localStorage.getItem(USER_KEY);
@@ -69,9 +190,43 @@ export default function Planner() {
           setUser(null);
         }
       }
+
+      // 在用户信息加载完成后，恢复草稿状态（但只在首次初始化时）
+      if (!isInitializedRef.current) {
+        loadDraft();
+        isInitializedRef.current = true;
+      }
     };
     checkUser();
   }, []);
+
+  // 自动保存草稿状态（当相关状态变化时）
+  useEffect(() => {
+    // 只在初始化完成后才保存，避免初始化时覆盖
+    if (isInitializedRef.current) {
+      const draft = {
+        destination,
+        days,
+        budget,
+        people,
+        prefs,
+        startDate,
+        inputText,
+        planOutput,
+        places,
+        routeSequence,
+        routeStrategy,
+        mapSnapshot,
+        currentPlanId,
+        timestamp: Date.now()
+      };
+      try {
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      } catch (error) {
+        console.error('保存草稿失败:', error);
+      }
+    }
+  }, [destination, days, budget, people, prefs, startDate, inputText, planOutput, places, routeSequence, routeStrategy, currentPlanId]);
 
   // 智能解析输入文本
   useEffect(() => {
@@ -112,6 +267,9 @@ export default function Planner() {
     setLoading(true);
     setPlaces([]);
     setRouteSequence([]);
+    setMapSnapshot(null);
+    // 生成新行程时，清除已保存的行程ID（因为这是新生成的）
+    setCurrentPlanId(null);
     try {
       const userPrompt = `目的地:${destination}\n天数:${days}\n预算:${budget}\n人数:${people}\n偏好:${prefs.join(',')}\n${startDate ? `出发日期:${startDate}\n` : ''}请输出详细的逐日行程、交通、住宿、景点、餐饮和门票费用估算（人民币），并给出现实可查的地标名称。`;
       const res = await generatePlan(userPrompt);
@@ -123,10 +281,11 @@ export default function Planner() {
         try {
           const parsedPlaces = await parsePlacesFromPlan(res, destination);
           const parsedRoutes = parseRouteSequence(res);
-          // 限制天数不超过用户请求的天数，避免错误解析导致的“多出天数”
+          // 限制天数不超过用户请求的天数，避免错误解析导致的"多出天数"
           const limitedRoutes = Array.isArray(parsedRoutes) ? parsedRoutes.slice(0, Math.max(0, Number(days) || 0)) : [];
           setPlaces(parsedPlaces);
           setRouteSequence(limitedRoutes);
+          setMapSnapshot(null);
         } catch (error) {
           console.error('解析地点和路线失败:', error);
         } finally {
@@ -154,7 +313,7 @@ export default function Planner() {
 
     setSaving(true);
     try {
-      await savePlan({
+      const savedPlan = await savePlan({
         id: currentPlanId,
         destination,
         days,
@@ -167,7 +326,12 @@ export default function Planner() {
         notes: ''
       });
       alert('保存成功！');
-      setCurrentPlanId(null); // 保存后重置，下次会创建新计划
+      // 保存成功后，更新 currentPlanId 为保存后的ID（如果有）
+      if (savedPlan && savedPlan.id) {
+        setCurrentPlanId(savedPlan.id);
+      } else {
+        setCurrentPlanId(null);
+      }
       await loadPlans();
     } catch (error) {
       alert('保存失败：' + error.message);
@@ -189,6 +353,7 @@ export default function Planner() {
       setInputText(plan.input_text || '');
       const planContent = plan.plan_content || '';
       setPlanOutput(planContent);
+      setMapSnapshot(null);
       setCurrentPlanId(plan.id);
       setShowPlansList(false);
       
@@ -200,6 +365,7 @@ export default function Planner() {
           const parsedRoutes = parseRouteSequence(planContent);
           setPlaces(parsedPlaces);
           setRouteSequence(parsedRoutes);
+          setMapSnapshot(null);
         } catch (error) {
           console.error('解析地点和路线失败:', error);
         } finally {
@@ -223,7 +389,7 @@ export default function Planner() {
       await deletePlan(planId);
       await loadPlans();
       if (currentPlanId === planId) {
-        // 如果删除的是当前正在编辑的行程，清空表单
+        // 如果删除的是当前正在编辑的行程，清空表单并清除草稿
         setCurrentPlanId(null);
         setDestination('');
         setDays(5);
@@ -233,12 +399,21 @@ export default function Planner() {
         setStartDate('');
         setInputText('');
         setPlanOutput('');
+        setPlaces([]);
+        setRouteSequence([]);
+        clearDraft();
+        setMapSnapshot(null);
       }
       alert('删除成功');
     } catch (error) {
       alert('删除失败：' + error.message);
     }
   };
+
+  const handleRouteStrategyChange = useCallback((value) => {
+    setRouteStrategy(value);
+    setMapSnapshot(null);
+  }, []);
 
   return (
     <div className="col" style={{ gap: 20 }}>
@@ -343,6 +518,30 @@ export default function Planner() {
                 </button>
               </>
             )}
+            {(destination || inputText || planOutput) && (
+              <button 
+                className="btn secondary" 
+                onClick={() => {
+                  if (confirm('确定要清除当前输入和生成的内容吗？此操作不可撤销。')) {
+                    setDestination('');
+                    setDays(5);
+                    setBudget(10000);
+                    setPeople(2);
+                    setPrefs(['美食']);
+                    setStartDate('');
+                    setInputText('');
+                    setPlanOutput('');
+                    setPlaces([]);
+                    setRouteSequence([]);
+                    setCurrentPlanId(null);
+                    clearDraft();
+                  }
+                }}
+                style={{ fontSize: '13px', padding: '8px 12px', color: 'var(--muted)' }}
+              >
+                清除
+              </button>
+            )}
           </div>
 
           {showPlansList && user && (
@@ -411,7 +610,7 @@ export default function Planner() {
             <select 
               className="input" 
               value={routeStrategy} 
-              onChange={(e) => setRouteStrategy(e.target.value)}
+              onChange={(e) => handleRouteStrategyChange(e.target.value)}
               style={{ fontSize: '12px', padding: '4px 8px', width: 'auto' }}
             >
               <option value="driving">驾车</option>
@@ -429,6 +628,14 @@ export default function Planner() {
             places={places}
             routeSequence={routeSequence}
             routeStrategy={routeStrategy}
+            persistedState={mapSnapshot}
+            onStatePersist={(snapshot) => {
+              if (!snapshot) return;
+              // 避免重复写入相同快照
+              if (!mapSnapshot || mapSnapshot.signature !== snapshot.signature) {
+                setMapSnapshot(snapshot);
+              }
+            }}
           />
           {!cfg.map.key && (
             <div className="muted" style={{ marginTop: 8, fontSize: '12px' }}>

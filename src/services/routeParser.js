@@ -159,17 +159,86 @@ export function parseRouteSequence(planText) {
     return t.trim();
   };
 
+  // 检查是否是标题行（一级、二级、三级标题）
+  const isHeader = (line) => {
+    return /^#{1,3}\s/.test(line.trim());
+  };
+
+  // 检查是否是三级标题（###）
+  const isLevel3Header = (line) => {
+    return /^###+\s/.test(line.trim());
+  };
+
+  // 从标题行中提取天数信息（支持多种格式）
+  const extractDayFromHeader = (line) => {
+    // 先移除 Markdown 标题符号（#、##、###），但保留内容
+    let content = line.replace(/^#+\s*/, '').trim();
+    // 移除粗体、斜体等格式符号（**、*、_、`等）
+    content = content.replace(/[*_~`]+/g, '');
+    content = content.replace(/["""'']/g, '');
+    // 移除可能的 emoji 和其他符号（保留中文和英文）
+    content = content.replace(/^[\u{1F300}-\u{1F9FF}\s]+/u, '');
+    
+    // 匹配各种天数格式：
+    // - 第1天、第2天、第一天、第二天
+    // - Day 1、Day 2、DAY 1
+    // - 行程第1天、行程第一天
+    const dayPatterns = [
+      /第\s*([一二三四五六七八九十百千万\d]+)\s*(?:天|日|晚|天行程)/,
+      /Day\s*(\d+)/i,
+      /行程第\s*([一二三四五六七八九十百千万\d]+)\s*(?:天|日)/,
+    ];
+
+    for (const pattern of dayPatterns) {
+      const match = content.match(pattern);
+      if (match) {
+        return parseDayNumber(match[1]);
+      }
+    }
+    
+    return null;
+  };
+
   lines.forEach((rawLine) => {
     const originalLine = rawLine || '';
     const line = originalLine.trim();
-    const cleaned = stripFormatting(line);
 
+    // 检查是否是标题行（优先处理三级标题，但也可以处理一级、二级标题）
+    if (isHeader(line)) {
+      const dayNum = extractDayFromHeader(line);
+      if (dayNum !== null) {
+        // 找到新的天数标题，提交之前的内容
+        commitCurrent();
+        currentDay = dayNum;
+        currentBuffer = [];
+        // 将标题行的剩余内容也加入缓冲区（可能包含地点信息）
+        const cleaned = stripFormatting(line);
+        const remainder = cleaned
+          .replace(/^(?:\s*第\s*[一二三四五六七八九十百千万\d]+\s*(?:天|日|晚|天行程)|\s*行程第\s*[一二三四五六七八九十百千万\d]+\s*(?:天|日)|\s*Day\s*\d+|\s*DAY\s*\d+)/i, '')
+          .replace(/^[:：\-——|｜\s]+/, '')
+          .trim();
+        if (remainder) {
+          currentBuffer.push(remainder);
+        }
+        return;
+      } else if (isLevel3Header(line) && currentDay != null) {
+        // 如果遇到新的三级标题但不包含天数，且当前已有天数，则结束当前天数段落
+        // 这样可以确保每个三级标题段落独立
+        // 注意：一级、二级标题不触发此逻辑，因为它们可能是更高层级的结构
+        commitCurrent();
+        currentDay = null;
+        currentBuffer = [];
+      }
+    }
+
+    // 如果不是三级标题，检查是否包含天数标识（兼容旧逻辑）
+    const cleaned = stripFormatting(line);
     if (!cleaned) {
       if (currentBuffer.length > 0) currentBuffer.push('');
       return;
     }
 
-    // 更全面的“第N天/日/晚/行程 Day N”标题识别（允许前后含有中文或符号）
+    // 更全面的"第N天/日/晚/行程 Day N"标题识别（允许前后含有中文或符号）
     const dayMatch = cleaned.match(/^(?:\s*第\s*([一二三四五六七八九十百千万\d]+)\s*(?:天|日|晚|天行程)|\s*行程第\s*([一二三四五六七八九十百千万\d]+)\s*(?:天|日)|\s*Day\s*(\d+)|\s*DAY\s*(\d+))/i);
     if (dayMatch) {
       commitCurrent();
@@ -181,6 +250,7 @@ export function parseRouteSequence(planText) {
         .trim();
       if (remainder) currentBuffer.push(remainder);
     } else if (currentDay != null) {
+      // 如果已经有当前天数，将内容加入缓冲区
       currentBuffer.push(cleaned);
     }
   });

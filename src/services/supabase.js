@@ -1,54 +1,98 @@
-// 云端数据存储适配层
-// - 优先使用 Firebase（如果提供了 Firebase 配置）
-// - 否则使用本地存储模拟（兼容现有 Supabase API 形状）
+import { createClient } from '@supabase/supabase-js';
+
+// Supabase 云端数据适配层
+// - 如果提供 Supabase 配置，使用真实 Supabase
+// - 否则回退到本地存储模拟
+
+const SUPABASE_CONFIG_KEY = 'supabase_config';
+const SUPABASE_SESSION_KEY = 'supabase_session';
+const SUPABASE_AUTH_STORAGE_KEY = 'ai-travel-planner-supabase-auth';
 
 function getSupabaseConfig() {
-  // 优先从 localStorage 读取配置
-  const configStr = localStorage.getItem('supabase_config');
-  if (configStr) {
-    try {
-      return JSON.parse(configStr);
-    } catch (e) {
-      console.error('Failed to parse Supabase config', e);
-    }
+  const configStr = localStorage.getItem(SUPABASE_CONFIG_KEY);
+  if (!configStr) {
+    return null;
   }
-  
-  // 如果没有配置，返回 null（将使用本地存储模式）
-  return null;
-}
-
-function getFirebaseConfig() {
-  const cfg = localStorage.getItem('firebase_config');
-  if (!cfg) return null;
   try {
-    const parsed = JSON.parse(cfg);
-    // 需要至少 apiKey、authDomain、projectId
-    if (parsed && parsed.apiKey && parsed.authDomain && parsed.projectId) {
-      return parsed;
+    const parsed = JSON.parse(configStr);
+    if (parsed && typeof parsed.url === 'string' && typeof parsed.anonKey === 'string') {
+      const sanitized = {
+        url: parsed.url.trim(),
+        anonKey: parsed.anonKey.trim()
+      };
+      let sanitizedServiceRoleKey =
+        typeof parsed.serviceRoleKey === 'string' ? parsed.serviceRoleKey.trim() : undefined;
+
+      if (sanitizedServiceRoleKey === '') {
+        sanitizedServiceRoleKey = undefined;
+      } else if (sanitizedServiceRoleKey && /[^\u0000-\u00ff]/.test(sanitizedServiceRoleKey)) {
+        console.warn('检测到 Supabase Service Role Key 包含非 ASCII 字符，自动忽略。');
+        sanitizedServiceRoleKey = undefined;
+      }
+
+      if (sanitizedServiceRoleKey) {
+        sanitized.serviceRoleKey = sanitizedServiceRoleKey;
+      }
+
+      if (sanitized.url && sanitized.anonKey) {
+        if (
+          sanitized.url !== parsed.url ||
+          sanitized.anonKey !== parsed.anonKey ||
+          sanitizedServiceRoleKey !== parsed.serviceRoleKey
+        ) {
+          // 覆写存储以保持数据一致
+          saveSupabaseConfig(sanitized);
+        }
+        return sanitized;
+      }
     }
-  } catch (e) {
-    console.error('Failed to parse Firebase config', e);
+  } catch (error) {
+    console.error('Failed to parse Supabase config', error);
   }
   return null;
 }
 
-async function ensureFirebaseSDKLoaded() {
-  if (window.firebaseApp && window.firebaseAuth && window.firebaseFirestore) {
-    return;
+function loadStoredSession() {
+  const raw = localStorage.getItem(SUPABASE_SESSION_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    console.warn('Failed to parse stored Supabase session:', error);
+    return null;
   }
-  // 通过动态导入加载 Firebase ESM（兼容现代打包器/浏览器）
-  const [
-    appMod,
-    authMod,
-    firestoreMod
-  ] = await Promise.all([
-    import('https://www.gstatic.com/firebasejs/10.12.1/firebase-app.js'),
-    import('https://www.gstatic.com/firebasejs/10.12.1/firebase-auth.js'),
-    import('https://www.gstatic.com/firebasejs/10.12.1/firebase-firestore.js')
-  ]);
-  window.firebaseApp = appMod;
-  window.firebaseAuth = authMod;
-  window.firebaseFirestore = firestoreMod;
+}
+
+function storeSession(session) {
+  if (session) {
+    localStorage.setItem(SUPABASE_SESSION_KEY, JSON.stringify(session));
+  } else {
+    localStorage.removeItem(SUPABASE_SESSION_KEY);
+  }
+}
+
+function normalizeSession(session, fallbackUser) {
+  if (!session && !fallbackUser) {
+    return null;
+  }
+
+  const user = session?.user || fallbackUser;
+  if (!user) {
+    return null;
+  }
+
+  return {
+    user: {
+      id: user.id,
+      email: user.email,
+      phone: user.phone || null,
+      user_metadata: user.user_metadata || {}
+    },
+    access_token: session?.access_token || null,
+    refresh_token: session?.refresh_token || null,
+    expires_at: session?.expires_at || null,
+    token_type: session?.token_type || 'bearer'
+  };
 }
 
 // 模拟 Supabase 客户端（当未配置 Supabase 时使用本地存储）
@@ -56,8 +100,11 @@ class LocalSupabaseClient {
   constructor() {
     this.users = JSON.parse(localStorage.getItem('supabase_users') || '[]');
     this.plans = JSON.parse(localStorage.getItem('supabase_plans') || '[]');
+    this.profiles = JSON.parse(localStorage.getItem('supabase_profiles') || '[]');
+    this.preferences = JSON.parse(localStorage.getItem('supabase_preferences') || '[]');
+    this.budgetRecords = JSON.parse(localStorage.getItem('supabase_budget_records') || '[]');
     this.auth = {
-      session: null,
+      session: loadStoredSession(),
       signUp: async (email, password) => {
         const existing = this.users.find(u => u.email === email);
         if (existing) {
@@ -71,7 +118,7 @@ class LocalSupabaseClient {
         this.users.push(user);
         localStorage.setItem('supabase_users', JSON.stringify(this.users));
         this.auth.session = { user, access_token: 'local_token_' + user.id };
-        localStorage.setItem('supabase_session', JSON.stringify(this.auth.session));
+        storeSession(this.auth.session);
         return { user, session: this.auth.session };
       },
       signInWithPassword: async (email, password) => {
@@ -80,43 +127,68 @@ class LocalSupabaseClient {
           throw new Error('邮箱或密码错误');
         }
         this.auth.session = { user, access_token: 'local_token_' + user.id };
-        localStorage.setItem('supabase_session', JSON.stringify(this.auth.session));
+        storeSession(this.auth.session);
         return { user, session: this.auth.session };
       },
       signOut: async () => {
         this.auth.session = null;
-        localStorage.removeItem('supabase_session');
+        storeSession(null);
       },
       getSession: () => {
-        const sessionStr = localStorage.getItem('supabase_session');
-        if (sessionStr) {
-          try {
-            this.auth.session = JSON.parse(sessionStr);
-            return this.auth.session;
-          } catch (e) {
-            return null;
-          }
+        if (this.auth.session) {
+          return this.auth.session;
         }
-        return null;
+        const restored = loadStoredSession();
+        this.auth.session = restored;
+        return restored;
       },
       onAuthStateChange: (callback) => {
-        // 简单的轮询检查
         const interval = setInterval(() => {
           const session = this.auth.getSession();
-          callback('SIGNED_IN', session);
+          callback(session ? 'SIGNED_IN' : 'SIGNED_OUT', session);
         }, 1000);
         return { data: { subscription: null }, unsubscribe: () => clearInterval(interval) };
       }
     };
-    
-    // 初始化时检查是否有已保存的 session
+
+    // 初始化时同步一次 session
     this.auth.getSession();
   }
 
+  ensureSchema() {
+    return Promise.resolve(false);
+  }
+
   from(table) {
+    const getTableData = () => {
+      switch (table) {
+        case 'travel_plans':
+          return { data: this.plans, key: 'supabase_plans' };
+        case 'user_profiles':
+          return { data: this.profiles, key: 'supabase_profiles' };
+        case 'user_preferences':
+          return { data: this.preferences, key: 'supabase_preferences' };
+        case 'budget_records':
+          return { data: this.budgetRecords, key: 'supabase_budget_records' };
+        default:
+          return null;
+      }
+    };
+
+    const tableInfo = getTableData();
+    if (!tableInfo) {
+      return {
+        select: () => ({ data: [], error: { message: 'Unsupported table' } }),
+        insert: () => ({ data: null, error: { message: 'Unsupported table' } }),
+        update: () => ({ eq: () => ({ data: null, error: { message: 'Unsupported table' } }) }),
+        delete: () => ({ eq: () => ({ data: null, error: { message: 'Unsupported table' } }) })
+      };
+    }
+
+    const { data: tableData, key: storageKey } = tableInfo;
+
     return {
       select: (columns = '*') => {
-        const self = this;
         const buildOrderResult = (rows, orderByColumn, options = { ascending: true }) => {
           const sorted = rows.slice().sort((a, b) => {
             const aVal = a[orderByColumn];
@@ -131,7 +203,7 @@ class LocalSupabaseClient {
         };
 
         const eqImpl = (column, value) => {
-          const filtered = self.plans.filter(p => p[column] === value);
+          const filtered = tableData.filter(row => row[column] === value);
           return {
             order: (orderByColumn, options = { ascending: true }) => buildOrderResult(filtered, orderByColumn, options),
             get data() { return filtered; },
@@ -141,43 +213,43 @@ class LocalSupabaseClient {
 
         return {
           eq: eqImpl,
-          order: (orderByColumn, options = { ascending: true }) => buildOrderResult(self.plans, orderByColumn, options),
-          get data() { return self.plans; },
+          order: (orderByColumn, options = { ascending: true }) => buildOrderResult(tableData, orderByColumn, options),
+          get data() { return tableData; },
           get error() { return null; }
         };
       },
       insert: (data) => {
-        const plan = {
+        const record = {
           ...data,
           id: crypto.randomUUID(),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         };
-        this.plans.push(plan);
-        localStorage.setItem('supabase_plans', JSON.stringify(this.plans));
-        return { data: [plan], error: null };
+        tableData.push(record);
+        localStorage.setItem(storageKey, JSON.stringify(tableData));
+        return { data: [record], error: null };
       },
       update: (data) => ({
         eq: (column, value) => {
-          const index = this.plans.findIndex(p => p[column] === value);
+          const index = tableData.findIndex(row => row[column] === value);
           if (index !== -1) {
-            this.plans[index] = {
-              ...this.plans[index],
+            tableData[index] = {
+              ...tableData[index],
               ...data,
               updated_at: new Date().toISOString()
             };
-            localStorage.setItem('supabase_plans', JSON.stringify(this.plans));
-            return { data: [this.plans[index]], error: null };
+            localStorage.setItem(storageKey, JSON.stringify(tableData));
+            return { data: [tableData[index]], error: null };
           }
           return { data: null, error: { message: 'Not found' } };
         }
       }),
       delete: () => ({
         eq: (column, value) => {
-          const index = this.plans.findIndex(p => p[column] === value);
+          const index = tableData.findIndex(row => row[column] === value);
           if (index !== -1) {
-            const deleted = this.plans.splice(index, 1)[0];
-            localStorage.setItem('supabase_plans', JSON.stringify(this.plans));
+            const deleted = tableData.splice(index, 1)[0];
+            localStorage.setItem(storageKey, JSON.stringify(tableData));
             return { data: [deleted], error: null };
           }
           return { data: null, error: { message: 'Not found' } };
@@ -187,352 +259,195 @@ class LocalSupabaseClient {
   }
 }
 
-// 使用 Firebase 的 Supabase 兼容客户端
-class FirebaseSupabaseCompatClient {
-  constructor(firebaseConfig) {
-    this._initialized = false;
-    this._initPromise = this._initialize(firebaseConfig);
+class RemoteSupabaseClient {
+  constructor(config) {
+    this._config = config;
+    this._client = createClient(config.url, config.anonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+        storageKey: SUPABASE_AUTH_STORAGE_KEY
+      }
+    });
+    this._session = normalizeSession(loadStoredSession(), null);
+    this._schemaPromise = null;
+    this._schemaWarningShown = false;
+
     this.auth = {
       signUp: async (email, password) => {
-        await this._initPromise;
-        const { createUserWithEmailAndPassword } = window.firebaseAuth;
-        const cred = await createUserWithEmailAndPassword(this._auth, email, password);
-        const user = { id: cred.user.uid, email: cred.user.email };
-        const session = { user, access_token: 'firebase_token_' + user.id };
-        localStorage.setItem('supabase_session', JSON.stringify(session));
-        return { user, session };
+        const { data, error } = await this._client.auth.signUp({ email, password });
+        if (error) {
+          throw error;
+        }
+        this._updateSession(data.session, data.user);
+        return { user: data.user, session: this._session };
       },
       signInWithPassword: async (email, password) => {
-        await this._initPromise;
-        const { signInWithEmailAndPassword } = window.firebaseAuth;
-        const cred = await signInWithEmailAndPassword(this._auth, email, password);
-        const user = { id: cred.user.uid, email: cred.user.email };
-        const session = { user, access_token: 'firebase_token_' + user.id };
-        localStorage.setItem('supabase_session', JSON.stringify(session));
-        return { user, session };
+        const { data, error } = await this._client.auth.signInWithPassword({ email, password });
+        if (error) {
+          throw error;
+        }
+        this._updateSession(data.session, data.user);
+        return { user: data.user, session: this._session };
       },
       signOut: async () => {
-        await this._initPromise;
-        const { signOut } = window.firebaseAuth;
-        await signOut(this._auth);
-        localStorage.removeItem('supabase_session');
+        const { error } = await this._client.auth.signOut();
+        if (error) {
+          throw error;
+        }
+        this._updateSession(null);
       },
       getSession: () => {
-        const raw = localStorage.getItem('supabase_session');
-        if (!raw) return null;
-        try {
-          return JSON.parse(raw);
-        } catch {
-          return null;
+        if (this._session) {
+          return this._session;
         }
+        const restored = normalizeSession(loadStoredSession(), null);
+        this._session = restored;
+        return restored;
       },
       onAuthStateChange: (callback) => {
-        // 简化的监听：读取存储的 session（可按需扩展实时监听）
-        const interval = setInterval(() => {
-          const session = this.auth.getSession();
-          callback('SIGNED_IN', session);
-        }, 1000);
-        return { data: { subscription: null }, unsubscribe: () => clearInterval(interval) };
+        const { data } = this._client.auth.onAuthStateChange((event, session) => {
+          this._updateSession(session);
+          callback(event, this._session);
+        });
+        const subscription = data?.subscription;
+        return {
+          data,
+          unsubscribe: () => {
+            if (subscription?.unsubscribe) {
+              subscription.unsubscribe();
+            } else if (subscription?.subscription?.unsubscribe) {
+              subscription.subscription.unsubscribe();
+            }
+          }
+        };
       }
     };
+
+    // 异步刷新一次 session，确保本地缓存与 Supabase 同步
+    this._client.auth.getSession().then(({ data, error }) => {
+      if (error) {
+        console.warn('Supabase getSession failed:', error);
+        return;
+      }
+      this._updateSession(data?.session || null);
+    });
+
+    // 需要手动建表，给出提示
+    this.ensureSchema().catch((error) => {
+      console.warn('Supabase 数据表检查失败，请手动确认表结构。', error);
+    });
   }
 
-  async _initialize(firebaseConfig) {
-    if (this._initialized) return;
-    await ensureFirebaseSDKLoaded();
-    const { initializeApp, getApps } = window.firebaseApp;
-    const { getAuth } = window.firebaseAuth;
-    const { getFirestore } = window.firebaseFirestore;
-
-    // 复用已存在的 app，避免重复初始化
-    const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-    this._auth = getAuth(app);
-    this._db = getFirestore(app);
-    this._initialized = true;
+  _updateSession(session, fallbackUser) {
+    this._session = normalizeSession(session, fallbackUser);
+    storeSession(this._session);
   }
 
-  from(table) {
-    // 仅实现 travel_plans 所需方法
-    if (table !== 'travel_plans') {
-      return {
-        select: () => ({ data: [], error: { message: 'Unsupported table' } }),
-        insert: () => ({ data: null, error: { message: 'Unsupported table' } }),
-        update: () => ({ eq: () => ({ data: null, error: { message: 'Unsupported table' } }) }),
-        delete: () => ({ eq: () => ({ data: null, error: { message: 'Unsupported table' } }) })
-      };
+  ensureSchema(force = false) {
+    if (!this._schemaWarningShown || force) {
+      console.warn(
+        'Supabase 自动建表已关闭，请在 Supabase 控制台手动创建所需数据表和策略。'
+      );
+      this._schemaWarningShown = true;
     }
+    return Promise.resolve(false);
+  }
 
-    const api = {
-      select: (columns = '*') => {
-        // 构建链式查询对象
-        const buildQueryChain = (filters = []) => {
-          const executeQuery = async () => {
-            await this._initPromise;
-            const { collection, query, where, getDocs } = window.firebaseFirestore;
-            const colRef = collection(this._db, 'travel_plans');
-            
-            // 只使用第一个过滤条件（避免需要复合索引），其他条件在客户端过滤
-            let q = colRef;
-            if (filters.length > 0) {
-              q = query(colRef, where(filters[0].column, '==', filters[0].value));
-            }
-            
-            const snap = await getDocs(q);
-            let data = [];
-            snap.forEach(doc => {
-              data.push(doc.data());
-            });
-            
-            // 客户端应用剩余的过滤条件
-            if (filters.length > 1) {
-              for (let i = 1; i < filters.length; i++) {
-                data = data.filter(row => row[filters[i].column] === filters[i].value);
-              }
-            }
-            
-            return data;
-          };
+  from(...args) {
+    return this._client.from(...args);
+  }
 
-          const addFilter = (column, value) => {
-            return buildQueryChain([...filters, { column, value }]);
-          };
+  rpc(...args) {
+    return this._client.rpc(...args);
+  }
 
-          return {
-            eq: addFilter,
-            order: async (orderByColumn, options = { ascending: true }) => {
-              const data = await executeQuery();
-              
-              // 客户端排序
-              data.sort((a, b) => {
-                const aVal = a[orderByColumn] || '';
-                const bVal = b[orderByColumn] || '';
-                if (options.ascending) {
-                  return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
-                } else {
-                  return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
-                }
-              });
-              return { data, error: null };
-            },
-            // 支持直接 await 或访问 data/error
-            then: async (resolve, reject) => {
-              try {
-                const data = await executeQuery();
-                const result = { data, error: null };
-                if (resolve) resolve(result);
-                return result;
-              } catch (error) {
-                const result = { data: null, error };
-                if (reject) reject(error);
-                return result;
-              }
-            },
-            catch: async (fn) => {
-              try {
-                const data = await executeQuery();
-                return { data, error: null };
-              } catch (error) {
-                return fn(error);
-              }
-            },
-            // 兼容直接访问 data/error（异步）
-            get data() {
-              // 返回一个 Promise，这样可以直接 await
-              return executeQuery().then(data => data);
-            },
-            get error() {
-              return null;
-            }
-          };
-        };
-        
-        return {
-          eq: (column, value) => buildQueryChain([{ column, value }])
-        };
-      },
-      insert: async (data) => {
-        await this._initPromise;
-        const { collection, addDoc, doc, setDoc, serverTimestamp } = window.firebaseFirestore;
-        const colRef = collection(this._db, 'travel_plans');
-        // 先生成 doc，再将 id 写入字段，保持与 Supabase 返回形状一致
-        const newDocRef = await addDoc(colRef, {});
-        const id = newDocRef.id;
-        const nowIso = new Date().toISOString();
-        const row = { ...data, id, created_at: nowIso, updated_at: nowIso };
-        await setDoc(doc(this._db, 'travel_plans', id), row);
-        return { data: [row], error: null };
-      },
-      update: (data) => {
-        const buildUpdateChain = (filters = []) => {
-          const addFilter = (column, value) => {
-            return buildUpdateChain([...filters, { column, value }]);
-          };
+  channel(...args) {
+    return this._client.channel(...args);
+  }
 
-          return {
-            eq: addFilter,
-            then: async () => {
-              await this._initPromise;
-              const { collection, query, where, getDocs, doc, updateDoc } = window.firebaseFirestore;
-              const colRef = collection(this._db, 'travel_plans');
-              
-              // 只使用第一个过滤条件，其他条件在客户端过滤
-              let q = colRef;
-              if (filters.length > 0) {
-                q = query(colRef, where(filters[0].column, '==', filters[0].value));
-              }
-              
-              const snap = await getDocs(q);
-              let matches = [];
-              snap.forEach(doc => {
-                const row = doc.data();
-                // 应用所有过滤条件
-                const matchesAll = filters.every(f => row[f.column] === f.value);
-                if (matchesAll) {
-                  matches.push({ docId: doc.id, data: row });
-                }
-              });
-              
-              if (matches.length === 0) {
-                return { data: null, error: { message: 'Not found' } };
-              }
-              
-              // 更新第一个匹配的文档
-              const { docId, data: oldData } = matches[0];
-              const docRef = doc(this._db, 'travel_plans', docId);
-              const updated = { ...oldData, ...data, updated_at: new Date().toISOString() };
-              await updateDoc(docRef, updated);
-              return { data: [updated], error: null };
-            }
-          };
-        };
-        
-        // 让链式调用返回 thenable 对象，可以直接 await
-        return {
-          eq: (column, value) => {
-            const next = buildUpdateChain([{ column, value }]);
-            // 返回一个 thenable 对象，可以直接 await
-            const thenable = {
-              eq: (col, val) => {
-                const nextChain = buildUpdateChain([{ column, value }, { column: col, value: val }]);
-                return {
-                  eq: nextChain.eq,
-                  then: nextChain.then,
-                  catch: (fn) => nextChain.then().catch(fn)
-                };
-              },
-              then: next.then,
-              catch: (fn) => next.then().catch(fn)
-            };
-            return thenable;
-          }
-        };
-      },
-      delete: () => {
-        const buildDeleteChain = (filters = []) => {
-          const addFilter = (column, value) => {
-            return buildDeleteChain([...filters, { column, value }]);
-          };
+  get storage() {
+    return this._client.storage;
+  }
 
-          return {
-            eq: addFilter,
-            then: async () => {
-              await this._initPromise;
-              const { collection, query, where, getDocs, doc, deleteDoc } = window.firebaseFirestore;
-              const colRef = collection(this._db, 'travel_plans');
-              
-              // 只使用第一个过滤条件，其他条件在客户端过滤
-              let q = colRef;
-              if (filters.length > 0) {
-                q = query(colRef, where(filters[0].column, '==', filters[0].value));
-              }
-              
-              const snap = await getDocs(q);
-              let matches = [];
-              snap.forEach(doc => {
-                const row = doc.data();
-                // 应用所有过滤条件
-                const matchesAll = filters.every(f => row[f.column] === f.value);
-                if (matchesAll) {
-                  matches.push({ docId: doc.id, data: row });
-                }
-              });
-              
-              if (matches.length === 0) {
-                return { data: null, error: { message: 'Not found' } };
-              }
-              
-              // 删除第一个匹配的文档
-              const { docId, data: deletedData } = matches[0];
-              await deleteDoc(doc(this._db, 'travel_plans', docId));
-              return { data: [deletedData], error: null };
-            }
-          };
-        };
-        
-        return {
-          eq: (column, value) => {
-            const next = buildDeleteChain([{ column, value }]);
-            // 返回一个 thenable 对象，可以直接 await
-            const thenable = {
-              eq: (col, val) => {
-                const nextChain = buildDeleteChain([{ column, value }, { column: col, value: val }]);
-                return {
-                  eq: nextChain.eq,
-                  then: nextChain.then,
-                  catch: (fn) => nextChain.then().catch(fn)
-                };
-              },
-              then: next.then,
-              catch: (fn) => next.then().catch(fn)
-            };
-            return thenable;
-          }
-        };
-      }
-    };
-
-    return api;
+  get functions() {
+    return this._client.functions;
   }
 }
 
 // 获取 Supabase 客户端实例
 let supabaseInstance = null;
 
+export async function ensureSupabaseTables(client) {
+  const targetClient = client || supabaseInstance || getSupabase();
+  if (targetClient && typeof targetClient.ensureSchema === 'function') {
+    return targetClient.ensureSchema();
+  }
+  return false;
+}
+
 export function getSupabase() {
   if (supabaseInstance) {
     return supabaseInstance;
   }
 
-  // 优先使用 Firebase
-  const firebaseCfg = getFirebaseConfig();
-  if (firebaseCfg) {
-    supabaseInstance = new FirebaseSupabaseCompatClient(firebaseCfg);
-    return supabaseInstance;
+  const config = getSupabaseConfig();
+  if (config) {
+    try {
+      supabaseInstance = new RemoteSupabaseClient(config);
+      return supabaseInstance;
+    } catch (error) {
+      console.error('初始化 Supabase 客户端失败，回退到本地模式:', error);
+    }
   }
 
-  // 次选：如果真的配置了 Supabase（本项目默认未集成包），仍回退到本地兼容
-  const supaCfg = getSupabaseConfig();
-  if (supaCfg && supaCfg.url && supaCfg.anonKey) {
-    console.warn('检测到 Supabase 配置，但未集成 @supabase/supabase-js，使用本地存储模式。');
-  }
   supabaseInstance = new LocalSupabaseClient();
-
   return supabaseInstance;
 }
 
 export function saveSupabaseConfig(config) {
-  localStorage.setItem('supabase_config', JSON.stringify(config));
-  // 重置实例以重新初始化
+  if (config && typeof config.url === 'string' && typeof config.anonKey === 'string') {
+    const sanitizedUrl = config.url.trim();
+    const sanitizedAnonKey = config.anonKey.trim();
+    let sanitizedServiceRoleKey =
+      typeof config.serviceRoleKey === 'string' ? config.serviceRoleKey.trim() : undefined;
+
+    if (sanitizedServiceRoleKey === '') {
+      sanitizedServiceRoleKey = undefined;
+    } else if (sanitizedServiceRoleKey && /[^\u0000-\u00ff]/.test(sanitizedServiceRoleKey)) {
+      console.warn('Supabase Service Role Key 包含非 ASCII 字符，已忽略该值。');
+      sanitizedServiceRoleKey = undefined;
+    }
+
+    if (sanitizedUrl && sanitizedAnonKey) {
+      localStorage.setItem(
+        SUPABASE_CONFIG_KEY,
+        JSON.stringify({
+          url: sanitizedUrl,
+          anonKey: sanitizedAnonKey,
+          serviceRoleKey: sanitizedServiceRoleKey
+        })
+      );
+    } else {
+      localStorage.removeItem(SUPABASE_CONFIG_KEY);
+    }
+  } else {
+    localStorage.removeItem(SUPABASE_CONFIG_KEY);
+  }
   supabaseInstance = null;
 }
 
-export function saveFirebaseConfig(config) {
-  if (config) {
-    localStorage.setItem('firebase_config', JSON.stringify(config));
-  } else {
-    localStorage.removeItem('firebase_config');
+export function hasSupabaseConfig() {
+  return !!getSupabaseConfig();
+}
+
+export function shouldUseCloudStorage() {
+  if (!hasSupabaseConfig()) {
+    return false;
   }
-  supabaseInstance = null;
+  const session = loadStoredSession();
+  return !!(session && session.user && session.user.id);
 }
 
 // 仅用于开发调试：在浏览器控制台访问 Supabase 兼容客户端
@@ -548,4 +463,5 @@ if (typeof window !== 'undefined') {
     // 忽略定义失败
   }
 }
+
 
