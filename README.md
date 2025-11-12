@@ -1,5 +1,9 @@
 # Web 版 AI 旅行规划师 (AI Travel Planner)
 
+GitHub repo 地址:
+
+https://github.com/JessieGoya/AITravelPlanner
+
 ## 快速开始
 
 ### 环境要求
@@ -17,7 +21,7 @@ docker compose up --build
 
 启动成功后：
 - 前端入口：http://localhost:8080
-- 后端健康检查：http://localhost:8081/actuator/health（如未开启可忽略）
+- 后端：http://localhost:8081/ （“测试按钮仅用于测试是否能正常运行”）
 
 默认情况下，前端通过同源 `/api` 代理访问后端，无需额外配置。如需自定义后端地址，可在构建前设置 `VITE_BACKEND_URL` 环境变量。
 
@@ -47,10 +51,12 @@ mvn spring-boot:run
 后端默认监听 `8080` 端口，可通过 `server.port` 重写；对外提供 `/api/llm/chat` 代理接口。
 
 ## 部署说明
+部署前需要在 `./public` 下的 `ai-travel-planner-config.json` 文件中填写LLM、Supabase等的配置信息。
+
 - **生产构建**：执行 `npm run build` 生成 `dist/`，由根目录 `Dockerfile` 拷贝至 Nginx 镜像；后端独立通过 Maven 构建 `jar`。
 - **反向代理**：`nginx.conf` 将前端静态文件服务在 `80` 端口，转发 `/api` 到 `backend:8080`，保持同源调用。
-- **环境变量**：可在打包阶段注入 `VITE_BACKEND_URL`、`VITE_SUPABASE_URL` 等变量，或在 Settings 页面动态设置 LLM 与地图 Key。
-- **Supabase 集成**：部署前在 Settings 页填写 Supabase URL、Anon Key（可选 Service Role Key），即可启用云端表 `travel_plans`、`user_preferences`、`budget_records` 等。
+- **环境变量**：可在打包阶段注入 `VITE_BACKEND_URL`、`VITE_SUPABASE_URL` 等变量，或部署前在 `./public` 下的 `ai-travel-planner-config.json` 文件中填写LLM和地图等的配置信息，也可以在进入页面后在设置页面动态设置 LLM 与地图 Key。
+- **Supabase 集成**：部署前在 `./public` 下的 `ai-travel-planner-config.json` 文件中填写 Supabase URL、Anon Key（可选 Service Role Key），即可启用云端表 `travel_plans`、`user_preferences`、`budget_records` 等。
 
 ## 配置说明
 - 所有运行时配置存储在浏览器 `localStorage` 的 `runtime_config_v1` 字段，可在 Settings 页面查看、导入、导出。
