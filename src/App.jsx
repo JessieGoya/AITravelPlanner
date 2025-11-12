@@ -1,4 +1,4 @@
-import { Link, Outlet, Routes, Route, useNavigate, Navigate } from 'react-router-dom';
+import { Link, Outlet, Routes, Route, useNavigate, Navigate, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import Planner from './pages/Planner';
 import Budget from './pages/Budget';
@@ -11,6 +11,7 @@ const USER_KEY = 'demo_user_v1';
 
 function Layout() {
   const [user, setUser] = useState(null);
+  const location = useLocation();
 
   useEffect(() => {
     const checkUser = () => {
@@ -45,21 +46,53 @@ function Layout() {
     };
   }, []);
 
+  // 判断当前路径是否匹配
+  const isActive = (path) => {
+    if (path === '/') {
+      return location.pathname === '/';
+    }
+    return location.pathname.startsWith(path);
+  };
+
   return (
     <div className="app-root">
       <header className="app-header">
         <div className="brand">AI 旅行规划师</div>
         <nav className="nav">
-          <Link to="/">行程规划</Link>
-          <Link to="/budget">费用预算</Link>
-          <Link to="/settings">设置</Link>
+          <Link 
+            to="/" 
+            className={isActive('/') ? 'nav-link active' : 'nav-link'}
+          >
+            行程规划
+          </Link>
+          <Link 
+            to="/budget" 
+            className={isActive('/budget') ? 'nav-link active' : 'nav-link'}
+          >
+            费用预算
+          </Link>
+          <Link 
+            to="/settings" 
+            className={isActive('/settings') ? 'nav-link active' : 'nav-link'}
+          >
+            设置
+          </Link>
           {user ? (
-            <Link to="/profile" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: '13px', color: 'var(--muted)' }}>{user.name}</span>
+            <Link 
+              to="/profile" 
+              className={isActive('/profile') ? 'nav-link active' : 'nav-link'}
+              style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              <span style={{ fontSize: '13px' }}>{user.name}</span>
               <span style={{ fontSize: '12px' }}>👤</span>
             </Link>
           ) : (
-            <Link to="/login">登录</Link>
+            <Link 
+              to="/login" 
+              className={isActive('/login') ? 'nav-link active' : 'nav-link'}
+            >
+              登录
+            </Link>
           )}
         </nav>
       </header>

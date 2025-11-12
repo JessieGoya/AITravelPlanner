@@ -1263,6 +1263,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
 
         // 坐标去重，避免重复标记覆盖
         placeCoords = dedupeByCoordGrid(placeCoords);
+        const originalPlaceCoords = [...placeCoords];
 
         // 若提供了目的地，优先使用行政区边界过滤；若失败则回退半径过滤
         if (destination) {
@@ -1296,8 +1297,7 @@ export default function MapView({ destination, places = [], routeSequence = [], 
               if (placeCoords.length < 2) {
                 console.warn('范围过滤过于严格，已放宽为不过滤。');
                 // 回到不过滤的原始集合（去重后）
-                placeCoords = dedupeByCoordGrid(places.map(p => p.lng && p.lat ? { ...p } : null)
-                  .filter(Boolean));
+                placeCoords = [...originalPlaceCoords];
               }
             }
             if (dropped > 0) {

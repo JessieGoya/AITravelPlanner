@@ -10,7 +10,6 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isRegister, setIsRegister] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
   const [user, setUser] = useState(null);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -118,11 +117,6 @@ export default function Login() {
       setPassword('');
       setConfirmPassword('');
       setIsRegister(false);
-      
-      // 如果勾选了记住我，保存到 sessionStorage
-      if (rememberMe) {
-        sessionStorage.setItem(USER_KEY, JSON.stringify(u));
-      }
 
       // 上传用户信息到云端（注册时立即上传，登录时检查并上传）
       // 只有在 Supabase 配置有效时才尝试上传
@@ -176,7 +170,6 @@ export default function Login() {
       console.error('退出登录失败:', e);
     }
     localStorage.removeItem(USER_KEY);
-    sessionStorage.removeItem(USER_KEY);
     setUser(null);
     setError('');
   };
@@ -215,15 +208,40 @@ export default function Login() {
   }
 
   return (
-    // 在登录界面显示“欢迎进入AI Travel Planner”
-    // <div className="section-title">
-    //     <h1>欢迎进入AI Travel Planner</h1>
-    //   </div>
-    <div className="card" style={{ maxWidth: '500px', margin: '0 auto' }}>
-      <div className="section-title">
-        {isRegister ? '用户注册' : '用户登录'}
+    <div style={{ width: '100%', maxWidth: '600px', margin: '0 auto', padding: '20px' }}>
+      {/* 欢迎信息 */}
+      <div style={{ 
+        textAlign: 'center', 
+        marginBottom: '40px',
+        animation: 'fadeInDown 0.6s ease-out'
+      }}>
+        <h1 style={{ 
+          fontSize: 'clamp(24px, 5vw, 36px)', 
+          fontWeight: 700, 
+          margin: '0 0 16px 0',
+          background: 'linear-gradient(135deg, var(--primary-2), var(--primary))',
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent',
+          backgroundClip: 'text',
+          letterSpacing: '-0.5px'
+        }}>
+          欢迎进入 AI Travel Planner
+        </h1>
+        <p style={{ 
+          fontSize: 'clamp(14px, 2.5vw, 16px)', 
+          color: 'var(--muted)', 
+          margin: 0,
+          lineHeight: 1.6
+        }}>
+          智能旅行规划助手，让您的每一次旅行都更加精彩
+        </p>
       </div>
-      <div className="col" style={{ gap: 16 }}>
+
+      <div className="card" style={{ maxWidth: '500px', margin: '0 auto', animation: 'fadeInDown 0.8s ease-out' }}>
+        <div className="section-title" style={{ textAlign: 'center', marginBottom: '24px' }}>
+          {isRegister ? '用户注册' : '用户登录'}
+        </div>
+        <div className="col" style={{ gap: 16 }}>
         {error && (
           <div style={{
             background: 'rgba(239, 68, 68, 0.1)',
@@ -288,20 +306,6 @@ export default function Login() {
           </div>
         )}
         
-        <div className="row" style={{ alignItems: 'center', gap: 8 }}>
-          <input
-            type="checkbox"
-            id="rememberMe"
-            checked={rememberMe}
-            onChange={(e) => setRememberMe(e.target.checked)}
-            disabled={isLoading}
-            style={{ cursor: 'pointer' }}
-          />
-          <label htmlFor="rememberMe" style={{ fontSize: '14px', cursor: 'pointer', userSelect: 'none' }}>
-            记住我
-          </label>
-        </div>
-        
         <button
           className="btn"
           onClick={login}
@@ -329,6 +333,7 @@ export default function Login() {
         
         <div className="muted" style={{ fontSize: '13px', marginTop: 8, textAlign: 'center' }}>
           当前使用本地存储模式。可在设置页配置 Supabase 以启用云端同步。
+        </div>
         </div>
       </div>
     </div>

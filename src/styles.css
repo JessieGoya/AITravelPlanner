@@ -21,8 +21,36 @@ body {
 .app-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--border); background: rgba(11,16,32,0.6); backdrop-filter: blur(6px); position: sticky; top: 0; z-index: 10; }
 .brand { font-weight: 700; letter-spacing: 0.2px; }
 .nav { display: flex; gap: 14px; }
-.nav a { color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 8px; }
-.nav a:hover { color: var(--text); background: #0d1326; }
+.nav-link { 
+  color: var(--muted); 
+  text-decoration: none; 
+  padding: 6px 12px; 
+  border-radius: 8px; 
+  transition: all 0.2s ease;
+  font-weight: 500;
+  position: relative;
+}
+.nav-link:hover { 
+  color: var(--text); 
+  background: #0d1326; 
+}
+.nav-link.active {
+  color: var(--primary-2);
+  font-weight: 700;
+  background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+}
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--primary-2), var(--primary));
+  border-radius: 2px;
+}
 
 .app-main { padding: 20px; }
 .app-footer { padding: 14px 20px; color: var(--muted); border-top: 1px solid var(--border); }
@@ -50,6 +78,18 @@ body {
 .muted { color: var(--muted); }
 
 .plan-output { white-space: pre-wrap; background: #0b1224; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+
+/* 登录页面动画 */
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 
 /* 响应式优化 */
 @media (max-width: 600px) {
