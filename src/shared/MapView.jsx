@@ -1744,8 +1744,8 @@ export default function MapView({ destination, places = [], routeSequence = [], 
   };
 
   return (
-    <div style={{ position: 'relative' }}>
-      <div ref={ref} className="map" style={{ width: '100%', height: '420px', minHeight: '420px' }} />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div ref={ref} className="map" style={{ width: '100%', height: '100%', minHeight: '600px' }} />
       {progress.active && (
         <div
           style={{

@@ -46,10 +46,63 @@ body {
   .planner-top-grid { grid-template-columns: 1fr; }
 }
 
-.map { width: 100%; height: 420px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+.map { width: 100%; height: 100%; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
 .muted { color: var(--muted); }
 
 .plan-output { white-space: pre-wrap; background: #0b1224; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
 
+/* 响应式优化 */
+@media (max-width: 600px) {
+  .app-header {
+    padding: 10px 16px;
+  }
+  .nav {
+    gap: 8px;
+  }
+  .nav-link {
+    padding: 6px 10px;
+    font-size: 14px;
+  }
+  .app-main {
+    padding: 12px;
+  }
+}
 
+/* 地图为主的界面优化 */
+@media (max-width: 768px) {
+  .planner-top-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  /* 移动端浮动面板全屏显示 */
+  .planner-input-panel.panel-open {
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+  }
+  
+  .planner-input-panel:not(.panel-open) {
+    left: -100% !important;
+  }
+  
+  .planner-result-panel.panel-open {
+    right: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+  }
+  
+  .planner-result-panel:not(.panel-open) {
+    right: -100% !important;
+  }
+  
+  /* 移动端面板内容去掉圆角 */
+  .planner-input-panel.panel-open .card,
+  .planner-result-panel.panel-open .card {
+    border-radius: 0 !important;
+  }
+}
 

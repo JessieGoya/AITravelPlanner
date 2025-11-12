@@ -34,6 +34,8 @@ export default function Planner() {
   const [routeSequence, setRouteSequence] = useState([]);
   const [routeStrategy, setRouteStrategy] = useState('driving');
   const [parsingPlaces, setParsingPlaces] = useState(false);
+  const [showInputPanel, setShowInputPanel] = useState(true);
+  const [showResultPanel, setShowResultPanel] = useState(false);
   const [mapSnapshot, setMapSnapshot] = useState(() => {
     if (typeof window === 'undefined' || !window.sessionStorage) return null;
     try {
@@ -445,12 +447,153 @@ export default function Planner() {
   }, []);
 
   return (
-    <div className="col" style={{ gap: 20 }}>
-      {/* 上半部分：需求输入（左侧）和地图（右侧） */}
-      <div className="grid planner-top-grid" style={{ gap: 20 }}>
-        {/* 左侧：需求输入（缩小） */}
-        <div className="card" style={{ minWidth: 0 }}>
-          <div className="section-title">需求输入</div>
+    <div style={{ 
+      position: 'relative', 
+      width: '100%', 
+      height: 'calc(100vh - 140px)', 
+      minHeight: '600px',
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column'
+    }}>
+      {/* 地图容器 */}
+      <div style={{ 
+        position: 'relative',
+        flex: 1,
+        minHeight: 0,
+        borderRadius: '12px',
+        overflow: 'hidden',
+        border: '1px solid var(--border)',
+        marginBottom: 8
+      }}>
+        <div className="card" style={{ 
+          height: '100%', 
+          padding: 0,
+          background: 'transparent',
+          border: 'none'
+        }}>
+          <MapView 
+            destination={destination}
+            places={places}
+            routeSequence={routeSequence}
+            routeStrategy={routeStrategy}
+            persistedState={mapSnapshot}
+            onStatePersist={(snapshot) => {
+              if (!snapshot) return;
+              setMapSnapshot(snapshot);
+            }}
+          />
+        </div>
+      </div>
+
+      {/* 地图控制栏 - 放在地图下方 */}
+      <div style={{ 
+        display: 'flex',
+        gap: 8,
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        padding: '0 4px'
+      }}>
+        {/* 路线类型选择器 */}
+        <div style={{
+          background: 'rgba(17, 23, 42, 0.95)',
+          backdropFilter: 'blur(10px)',
+          border: '1px solid var(--border)',
+          borderRadius: '10px',
+          padding: '8px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8
+        }}>
+          <label style={{ fontSize: '12px', color: 'var(--muted)' }}>路线类型：</label>
+          <select 
+            className="input" 
+            value={routeStrategy} 
+            onChange={(e) => handleRouteStrategyChange(e.target.value)}
+            style={{ 
+              fontSize: '12px', 
+              padding: '4px 8px', 
+              width: 'auto',
+              background: 'rgba(14, 20, 40, 0.8)',
+              border: '1px solid var(--border)'
+            }}
+          >
+            <option value="driving">驾车</option>
+            <option value="walking">步行</option>
+            <option value="transit">公交</option>
+          </select>
+        </div>
+        {places.length > 0 && (
+          <div style={{
+            background: 'rgba(17, 23, 42, 0.95)',
+            backdropFilter: 'blur(10px)',
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            padding: '8px 12px',
+            fontSize: '12px',
+            color: 'var(--muted)'
+          }}>
+            已解析 {places.length} 个地点
+          </div>
+        )}
+        {parsingPlaces && (
+          <div style={{
+            background: 'rgba(17, 23, 42, 0.95)',
+            backdropFilter: 'blur(10px)',
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            padding: '8px 12px',
+            fontSize: '12px',
+            color: 'var(--primary-2)'
+          }}>
+            ⏳ 正在解析地点...
+          </div>
+        )}
+      </div>
+
+      {/* 需求输入浮动面板 - 左上角 */}
+      <div style={{
+        position: 'absolute',
+        top: 12,
+        left: showInputPanel ? 12 : -380,
+        width: '360px',
+        maxWidth: 'calc(100% - 24px)',
+        maxHeight: 'calc(100% - 24px)',
+        zIndex: 1001,
+        transition: 'left 0.3s ease-in-out',
+        overflow: 'hidden'
+      }}
+      className={`planner-input-panel ${showInputPanel ? 'panel-open' : ''}`}
+      >
+        <div className="card" style={{
+          background: 'rgba(17, 23, 42, 0.98)',
+          backdropFilter: 'blur(20px)',
+          border: '1px solid var(--border)',
+          borderRadius: '14px',
+          padding: '16px',
+          maxHeight: 'calc(100vh - 140px)',
+          overflowY: 'auto',
+          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)'
+        }}>
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            marginBottom: 16
+          }}>
+            <div className="section-title" style={{ margin: 0, fontSize: '16px' }}>需求输入</div>
+            <button
+              className="btn secondary"
+              onClick={() => setShowInputPanel(!showInputPanel)}
+              style={{ 
+                padding: '4px 8px', 
+                fontSize: '12px',
+                minWidth: 'auto'
+              }}
+            >
+              {showInputPanel ? '◀' : '▶'}
+            </button>
+          </div>
           <div className="col">
             <label>目的地</label>
             <input className="input" value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="如：日本东京" />
@@ -574,7 +717,11 @@ export default function Planner() {
           </div>
 
           {showPlansList && user && (
-            <div className="card" style={{ marginTop: 12 }}>
+            <div className="card" style={{ 
+              marginTop: 12,
+              background: 'rgba(14, 20, 40, 0.6)',
+              border: '1px solid var(--border)'
+            }}>
               <div className="section-title" style={{ fontSize: '14px' }}>我的行程列表</div>
               {savedPlans.length === 0 ? (
                 <div className="muted" style={{ padding: '16px', textAlign: 'center', fontSize: '12px' }}>
@@ -590,9 +737,23 @@ export default function Planner() {
                         justifyContent: 'space-between', 
                         alignItems: 'center',
                         padding: '8px',
-                        background: 'var(--bg-secondary)',
+                        background: 'rgba(14, 20, 40, 0.4)',
                         borderRadius: '6px',
-                        border: currentPlanId === plan.id ? '2px solid var(--primary)' : '1px solid var(--border)'
+                        border: currentPlanId === plan.id ? '2px solid var(--primary)' : '1px solid var(--border)',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (currentPlanId !== plan.id) {
+                          e.currentTarget.style.background = 'rgba(14, 20, 40, 0.6)';
+                          e.currentTarget.style.borderColor = 'var(--primary-2)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (currentPlanId !== plan.id) {
+                          e.currentTarget.style.background = 'rgba(14, 20, 40, 0.4)';
+                          e.currentTarget.style.borderColor = 'var(--border)';
+                        }
                       }}
                     >
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -627,61 +788,96 @@ export default function Planner() {
             </div>
           )}
         </div>
-
-        {/* 右侧：地图（放大） */}
-        <div className="card" style={{ minWidth: 0 }}>
-          <div className="section-title">
-            地图
-            {parsingPlaces && <span className="muted" style={{ fontSize: '12px', marginLeft: 8 }}>（正在解析地点...）</span>}
-          </div>
-          <div className="row" style={{ marginBottom: 8, gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <label style={{ fontSize: '12px' }}>路线类型：</label>
-            <select 
-              className="input" 
-              value={routeStrategy} 
-              onChange={(e) => handleRouteStrategyChange(e.target.value)}
-              style={{ fontSize: '12px', padding: '4px 8px', width: 'auto' }}
-            >
-              <option value="driving">驾车</option>
-              <option value="walking">步行</option>
-              <option value="transit">公交</option>
-            </select>
-            {places.length > 0 && (
-              <span className="muted" style={{ fontSize: '12px', marginLeft: 8 }}>
-                已解析 {places.length} 个地点
-              </span>
-            )}
-          </div>
-          <MapView 
-            destination={destination}
-            places={places}
-            routeSequence={routeSequence}
-            routeStrategy={routeStrategy}
-            persistedState={mapSnapshot}
-            onStatePersist={(snapshot) => {
-              if (!snapshot) return;
-              setMapSnapshot(snapshot);
-            }}
-          />
-          {!cfg.map.key && (
-            <div className="muted" style={{ marginTop: 8, fontSize: '12px' }}>
-              未配置地图 Key，前往设置页填入高德/百度 Key
-            </div>
-          )}
-          {cfg.map.key && places.length === 0 && planOutput && (
-            <div className="muted" style={{ marginTop: 8, fontSize: '12px' }}>
-              提示：地图将在地点解析完成后自动显示
-            </div>
-          )}
-        </div>
       </div>
 
-      {/* 下半部分：AI 规划结果（全宽） */}
+      {/* 规划结果侧边栏 - 右侧 */}
       {planOutput && (
-        <div className="card">
-          <div className="section-title">AI 规划结果</div>
-          <MarkdownPreview content={planOutput} />
+        <div style={{
+          position: 'absolute',
+          top: 12,
+          right: showResultPanel ? 12 : -420,
+          width: '400px',
+          maxWidth: 'calc(100% - 24px)',
+          maxHeight: 'calc(100% - 24px)',
+          zIndex: 1001,
+          transition: 'right 0.3s ease-in-out',
+          overflow: 'hidden'
+        }}
+        className={`planner-result-panel ${showResultPanel ? 'panel-open' : ''}`}
+        >
+          <div className="card" style={{
+            background: 'rgba(17, 23, 42, 0.98)',
+            backdropFilter: 'blur(20px)',
+            border: '1px solid var(--border)',
+            borderRadius: '14px',
+            padding: '16px',
+            maxHeight: 'calc(100vh - 140px)',
+            overflowY: 'auto',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)'
+          }}>
+            <div style={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center',
+              marginBottom: 16,
+              position: 'sticky',
+              top: 0,
+              background: 'rgba(17, 23, 42, 0.98)',
+              paddingBottom: 12,
+              zIndex: 10
+            }}>
+              <div className="section-title" style={{ margin: 0, fontSize: '16px' }}>AI 规划结果</div>
+              <button
+                className="btn secondary"
+                onClick={() => setShowResultPanel(!showResultPanel)}
+                style={{ 
+                  padding: '4px 8px', 
+                  fontSize: '12px',
+                  minWidth: 'auto'
+                }}
+              >
+                {showResultPanel ? '▶' : '◀'}
+              </button>
+            </div>
+            <MarkdownPreview content={planOutput} />
+          </div>
         </div>
+      )}
+
+      {/* 浮动按钮 - 显示/隐藏面板 */}
+      {!showInputPanel && (
+        <button
+          className="btn"
+          onClick={() => setShowInputPanel(true)}
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: 12,
+            zIndex: 1002,
+            padding: '10px 14px',
+            fontSize: '13px',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)'
+          }}
+        >
+          📝 输入需求
+        </button>
+      )}
+      {planOutput && !showResultPanel && (
+        <button
+          className="btn"
+          onClick={() => setShowResultPanel(true)}
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 12,
+            zIndex: 1002,
+            padding: '10px 14px',
+            fontSize: '13px',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)'
+          }}
+        >
+          📋 查看行程
+        </button>
       )}
     </div>
   );
